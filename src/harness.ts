@@ -137,12 +137,10 @@ export async function* runAgent(
     yield {
       type: "status",
       phase: "act",
-      label: `Running ${toolCalls.length} tool${toolCalls.length > 1 ? "s" : ""}...`,
+      label: `Running ${toolCalls.length} tool${toolCalls.length > 1 ? "s" : ""}${toolCalls.length > 1 ? " (parallel)" : ""}...`,
     };
 
-    const resultBlocks: ContentBlock[] = [];
-    let verified = false;
-
+    // Emit all tool_call events upfront
     for (const tc of toolCalls) {
       yield {
         type: "tool_call",
@@ -151,14 +149,50 @@ export async function* runAgent(
         toolTitle: toolTitle(tc.name, tc.input),
         toolInput: tc.input,
       };
+    }
 
+    // Split into read-only and write tools for parallel execution
+    const READ_TOOLS = new Set([
+      "list_files", "read_file", "search", "find_files",
+      "git_diff", "git_log", "git_status", "web_search", "wallet_balance",
+    ]);
+
+    const readCalls = toolCalls.filter(tc => READ_TOOLS.has(tc.name));
+    const writeCalls = toolCalls.filter(tc => !READ_TOOLS.has(tc.name));
+
+    const resultBlocks: ContentBlock[] = [];
+    const toolResults: Array<{ tc: typeof toolCalls[0]; r: Awaited<ReturnType<typeof executeTool>> }> = [];
+    let verified = false;
+
+    // Execute read-only tools in parallel
+    if (readCalls.length > 0) {
+      const results = await Promise.all(
+        readCalls.map(tc => executeTool(tc.name, tc.input).then(r => ({ tc, r })))
+      );
+      for (const { tc, r } of results) {
+        toolResults.push({ tc, r });
+        if (r.verifies && !verified) {
+          verified = true;
+          yield { type: "status", phase: "verify", label: "Verifying..." };
+        }
+      }
+    }
+
+    // Execute write tools sequentially (order matters)
+    for (const tc of writeCalls) {
       const r = await executeTool(tc.name, tc.input);
-
+      toolResults.push({ tc, r });
       if (r.verifies && !verified) {
         verified = true;
         yield { type: "status", phase: "verify", label: "Verifying..." };
       }
+    }
 
+    // Emit all tool results (in original order)
+    const tcMap = new Map(toolCalls.map((tc, i) => [tc.id, i]));
+    toolResults.sort((a, b) => (tcMap.get(a.tc.id) ?? 0) - (tcMap.get(b.tc.id) ?? 0));
+
+    for (const { tc, r } of toolResults) {
       yield {
         type: "tool_result",
         toolId: tc.id,
@@ -166,7 +200,6 @@ export async function* runAgent(
         toolOk: r.ok,
         toolOutput: r.output,
       };
-
       resultBlocks.push({
         type: "tool_result",
         tool_use_id: tc.id,

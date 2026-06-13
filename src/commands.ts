@@ -79,6 +79,7 @@ export const SLASH_COMMANDS = [
   "/commit", "/export", "/search", "/diff",
   "/status", "/log", "/find", "/stream",
   "/wallet", "/balance",
+  "/alias", "/setup",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -337,6 +338,17 @@ export function handleCommand(input: string, state: SessionState): string | null
     const parts = trimmed.slice(9).trim().split(/\s+/);
     if (parts.length < 2) return chalk.red("\n  ✗ Usage: /balance <chain> <address>\n  Example: /balance ethereum 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\n");
     return checkBalanceCli(parts[0], parts[1]);
+  }
+
+  // /alias [name] [prompt] — create or list command aliases
+  if (trimmed === "/alias" || trimmed.startsWith("/alias ")) {
+    const rest = trimmed.slice(7).trim();
+    return handleAlias(rest, state);
+  }
+
+  // /setup — interactive provider setup wizard
+  if (trimmed === "/setup") {
+    return setupWizard(state);
   }
 
   // /key — set API key
@@ -1131,4 +1143,119 @@ function bs58EncodeCmd(data: Buffer): string {
     encoded += ALPHABET[digits[i]];
   }
   return encoded;
+}
+
+// ── Alias System ────────────────────────────────────────────────────
+
+const ALIAS_FILE = path.join(os.homedir(), ".arx_aliases.json");
+
+interface Aliases {
+  [name: string]: string;
+}
+
+function loadAliases(): Aliases {
+  try {
+    if (fs.existsSync(ALIAS_FILE)) {
+      return JSON.parse(fs.readFileSync(ALIAS_FILE, "utf-8"));
+    }
+  } catch {}
+  return {};
+}
+
+function saveAliases(aliases: Aliases): void {
+  fs.writeFileSync(ALIAS_FILE, JSON.stringify(aliases, null, 2));
+}
+
+function handleAlias(rest: string, _state: SessionState): string {
+  const aliases = loadAliases();
+
+  // /alias — list all
+  if (!rest) {
+    const names = Object.keys(aliases);
+    if (!names.length) return chalk.dim("\n  No aliases. Create: /alias <name> <prompt>\n");
+    let out = `\n${chalk.bold.cyan("  Aliases")}\n\n`;
+    for (const [name, prompt] of Object.entries(aliases)) {
+      out += `  ${chalk.bold(name)}  →  ${chalk.dim(prompt.slice(0, 80))}\n`;
+    }
+    out += `\n  ${chalk.dim("Use: /alias <name>  |  Delete: /alias <name> --delete")}\n`;
+    return out;
+  }
+
+  const parts = rest.split(/\s+/);
+  const name = parts[0];
+
+  // /alias <name> --delete
+  if (parts[1] === "--delete" || parts[1] === "-d") {
+    if (!aliases[name]) return chalk.red(`\n  ✗ Alias "${name}" not found.\n`);
+    delete aliases[name];
+    saveAliases(aliases);
+    return chalk.green(`\n  ✓ Deleted alias: ${name}\n`);
+  }
+
+  // /alias <name> <prompt>
+  if (parts.length >= 2) {
+    const prompt = parts.slice(1).join(" ");
+    aliases[name] = prompt;
+    saveAliases(aliases);
+    return chalk.green(`\n  ✓ Alias saved: ${chalk.bold(name)} → ${chalk.dim(prompt.slice(0, 60))}\n`);
+  }
+
+  // /alias <name> — show
+  if (aliases[name]) {
+    return `\n  ${chalk.bold(name)}  →  ${aliases[name]}\n`;
+  }
+  return chalk.red(`\n  ✗ Alias "${name}" not found.\n`);
+}
+
+/**
+ * Expand alias if the input matches a known alias name.
+ * Called from bin/arx.ts before sending to agent.
+ */
+export function expandAlias(input: string): string {
+  const trimmed = input.trim();
+  const aliases = loadAliases();
+  // Check exact match first
+  if (aliases[trimmed]) return aliases[trimmed];
+  // Check if starts with alias name + space
+  for (const [name, prompt] of Object.entries(aliases)) {
+    if (trimmed.startsWith(name + " ")) {
+      return prompt + " " + trimmed.slice(name.length + 1);
+    }
+  }
+  return input;
+}
+
+// ── Setup Wizard ────────────────────────────────────────────────────
+
+function setupWizard(state: SessionState): string {
+  let out = `\n${chalk.bold.cyan("  ArxCode CLI Setup")}\n\n`;
+
+  // Current config
+  out += `${chalk.yellow("▸ Current")}\n`;
+  out += `  Provider : ${chalk.bold(state.providerId)}\n`;
+  out += `  Model    : ${chalk.bold(state.model || "(default)")}\n`;
+  out += `  API Key  : ${state.apiKey ? chalk.green("set") : chalk.red("missing")}\n\n`;
+
+  // Providers
+  out += `${chalk.yellow("▸ Providers")}  ${chalk.dim("/provider <name> to switch")}\n\n`;
+  for (const [id, meta] of Object.entries(PROVIDER_REGISTRY)) {
+    const keys = (state.config.keys as Record<string, string | undefined>) ?? {};
+    const hasKey = !!keys[id];
+    const marker = id === state.providerId ? chalk.green("●") : " ";
+    const keyStatus = hasKey ? chalk.green("key ✓") : chalk.dim("no key");
+    out += `  ${marker} ${chalk.bold(meta.name.padEnd(20))} ${keyStatus}  ${chalk.dim("/provider " + id)}\n`;
+  }
+
+  out += `\n${chalk.yellow("▸ Quick Start")}\n`;
+  out += `  1. Set API key:  ${chalk.bold("/key sk-...")}\n`;
+  out += `  2. Pick provider: ${chalk.bold("/provider groq")} (free!) or ${chalk.bold("/provider deepseek")} (cheap)\n`;
+  out += `  3. Pick model:    ${chalk.bold("/model llama-4-scout")}\n`;
+  out += `  4. Start coding:  ${chalk.dim("just type your prompt")}\n`;
+
+  out += `\n${chalk.yellow("▸ Env Vars")}\n`;
+  out += `  Copy ${chalk.bold(".env.example")} → ${chalk.bold(".env")} and fill in your keys.\n`;
+  out += `  Or set per-provider: GROQ_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, etc.\n`;
+
+  out += `\n${chalk.dim("  Type /help for all commands, /tools for agent tools.\n")}`;
+  return out;
 }

@@ -25,7 +25,7 @@ import { createProvider } from "../src/llm/index.js";
 import { runAgent, type HarnessEvent } from "../src/harness.js";
 import { loadConfig, resolveProviderConfig, configStatus } from "../src/config.js";
 import { LLMError, PROVIDER_REGISTRY } from "../src/llm/types.js";
-import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS } from "../src/commands.js";
+import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias } from "../src/commands.js";
 import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
 import { showBanner } from "../src/banner.js";
@@ -67,6 +67,9 @@ async function runOneShot(prompt: string, opts: Record<string, string>) {
 
   const projectRoot = path.resolve(opts.project);
 
+  // Expand aliases in one-shot mode
+  const expandedPrompt = expandAlias(prompt);
+
   console.log(showBanner(VERSION));
   console.log(chalk.dim(`   Provider : ${providerCfg.provider}`));
   console.log(chalk.dim(`   Model    : ${providerCfg.model || "(default)"}`));
@@ -81,7 +84,7 @@ async function runOneShot(prompt: string, opts: Record<string, string>) {
     process.exit(1);
   }
 
-  await streamAgent(provider, prompt, projectRoot, cfg.maxSteps ?? 24);
+  await streamAgent(provider, expandedPrompt, projectRoot, cfg.maxSteps ?? 24);
 }
 
 // ── Interactive REPL Mode ──────────────────────────────────────────
@@ -328,6 +331,13 @@ async function processInput(input: string, state: SessionState, rl: readline.Int
       return;
     }
     prompt = input;
+  }
+
+  // Expand aliases
+  const expanded = expandAlias(prompt);
+  if (expanded !== prompt) {
+    console.log(chalk.dim(`  → ${expanded.slice(0, 80)}...\n`));
+    prompt = expanded;
   }
 
   // Expand @file references before sending to agent

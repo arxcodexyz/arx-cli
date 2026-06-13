@@ -1,0 +1,33 @@
+{
+  "name": "arx-cli",
+  "version": "0.1.0",
+  "description": "ArxCode CLI — autonomous coding agent. Private AI builder. BYOK.",
+  "type": "module",
+  "bin": {
+    "arx": "./dist/bin/arx.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx bin/arx.ts",
+    "start": "node dist/bin/arx.js"
+  },
+  "keywords": ["arx-cli", "ai", "coding-agent", "cli", "byok"],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "ora": "^8.1.1",
+    "yaml": "^2.6.1",
+    "commander": "^12.1.0",
+    "diff": "^7.0.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0",
+    "@types/diff": "^7.0.0"
+  }
+}

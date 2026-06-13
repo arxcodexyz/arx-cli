@@ -1,0 +1,42 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Environment — NEVER commit .env files
+.env
+.env.*
+*.env
+!.env.example
+
+# ArxCode config (contains API keys)
+.arxrc.yaml
+.arxrc.yml
+.arxrc.json
+
+# ArxCode runtime data (may contain key references)
+.arx_history
+.arx_sessions/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials & private keys
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+*_credentials*
+secrets*
+*secret*
+
+# Test output
+test-output.txt
+/tmp/

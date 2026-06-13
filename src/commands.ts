@@ -10,7 +10,7 @@ import * as cp from "node:child_process";
 import * as crypto from "node:crypto";
 import chalk from "chalk";
 import type { ArxConfig, ProviderId } from "./config.js";
-import { loadConfig, resolveProviderConfig, configStatus } from "./config.js";
+import { loadConfig, resolveProviderConfig, configStatus, saveConfig } from "./config.js";
 import { TOOL_DEFS } from "./tools.js";
 import { PROVIDER_REGISTRY } from "./llm/types.js";
 import { loadContextFiles } from "./context.js";
@@ -162,6 +162,11 @@ export function handleCommand(input: string, state: SessionState): string | null
     const key = keys[providerId] || state.apiKey;
     if (key) state.apiKey = key;
     const hasKey = keys[providerId];
+
+    // Persist config so keys survive restart
+    state.config.provider = providerId;
+    state.config.model = state.model;
+    saveConfig(state.config);
 
     return chalk.green(`\n  ✓ Provider: ${chalk.bold(meta.name)} | Model: ${state.model} | Key: ${hasKey ? "✓" : "✗ MISSING"}\n`);
   }
@@ -370,14 +375,15 @@ export function handleCommand(input: string, state: SessionState): string | null
     return showHooks(state.projectRoot, arg);
   }
 
-  // /key — set API key
+  // /key — set API key (persists to ~/.arxrc.yaml)
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
     state.apiKey = key;
     state.config.apiKey = key;
     if (!state.config.keys) state.config.keys = {};
     state.config.keys[state.providerId] = key;
-    return chalk.green(`\n  ✓ API key set for ${state.providerId}\n`);
+    saveConfig(state.config);
+    return chalk.green(`\n  ✓ API key set for ${state.providerId} (saved)\n`);
   }
 
   return null; // not a command

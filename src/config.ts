@@ -162,6 +162,32 @@ export function resolveProviderConfig(cfg: ArxConfig): ProviderConfig {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+/** Save config to ~/.arxrc.yaml so keys persist across sessions. */
+export function saveConfig(cfg: ArxConfig): void {
+  const filePath = path.join(os.homedir(), ".arxrc.yaml");
+  const toWrite: Record<string, unknown> = {};
+  if (cfg.provider) toWrite.provider = cfg.provider;
+  if (cfg.model) toWrite.model = cfg.model;
+  if (cfg.keys && Object.keys(cfg.keys).length > 0) {
+    // Only save non-empty keys
+    const cleanKeys: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cfg.keys)) {
+      if (v) cleanKeys[k] = v;
+    }
+    if (Object.keys(cleanKeys).length > 0) toWrite.keys = cleanKeys;
+  }
+  if (cfg.models && Object.keys(cfg.models).length > 0) toWrite.models = cfg.models;
+  if (cfg.maxSteps) toWrite.maxSteps = cfg.maxSteps;
+  if (cfg.baseUrl) toWrite.baseUrl = cfg.baseUrl;
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, YAML.stringify(toWrite), "utf-8");
+  } catch {
+    // Silently fail — user can still use keys in-session
+  }
+}
+
 export function configStatus(cfg: ArxConfig): string {
   const provider = cfg.provider ?? "anthropic";
   const meta = PROVIDER_REGISTRY[provider];

@@ -15,6 +15,7 @@ import { TOOL_DEFS } from "./tools.js";
 import { PROVIDER_REGISTRY } from "./llm/types.js";
 import { loadContextFiles } from "./context.js";
 import { glob } from "glob";
+import { loadHooks, type Hook, type HookEvent } from "./hooks.js";
 
 // ── Model Presets ───────────────────────────────────
 
@@ -80,7 +81,7 @@ export const SLASH_COMMANDS = [
   "/status", "/log", "/find", "/stream",
   "/wallet", "/balance",
   "/alias", "/setup",
-  "/tokens",
+  "/tokens", "/hook",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -360,6 +361,12 @@ export function handleCommand(input: string, state: SessionState): string | null
     return showTokens(state);
   }
 
+  // /hook [name] — list hooks or disable/enable
+  if (trimmed === "/hook" || trimmed.startsWith("/hook ")) {
+    const arg = trimmed.slice(6).trim();
+    return showHooks(state.projectRoot, arg);
+  }
+
   // /key — set API key
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
@@ -413,7 +420,7 @@ function showTools(): string {
 
 function showHelp(): string {
   return `
-${chalk.bold.cyan("  ArxCode CLI — v0.3.0")}  ${chalk.dim("Private AI builder · BYOK · 15 tools · 26 commands")}
+${chalk.bold.cyan("  ArxCode CLI — v0.4.0")}  ${chalk.dim("Private AI builder · BYOK · 15 tools · 27 commands")}
 
   ${chalk.bold.yellow("▸ Session")}
   ${chalk.bold("/model")} [name]     Show or switch model
@@ -430,6 +437,7 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.3.0")}  ${chalk.dim("Private AI builder 
   ${chalk.bold("/reload")}          Re-scan project context files (AGENTS.md etc)
   ${chalk.bold("/compact")} [instr] Compress conversation context (saves tokens)
   ${chalk.bold("/tokens")}           Show session token usage & cost estimate
+  ${chalk.bold("/hook")}             List active hooks (guardrails)
   ${chalk.bold("/tools")}           List available agent tools
 
   ${chalk.bold.yellow("▸ Files")}
@@ -512,6 +520,45 @@ ${chalk.bold.cyan("  Token Usage")}
   ${chalk.dim("Messages:")} ${msgCount}  ${chalk.dim(`(~${estTokens.toLocaleString()} est. context tokens, ${ctxPercent}% of session)`)}
   ${chalk.dim("Use /compact to shrink context and save tokens.")}
 `;
+}
+
+function showHooks(projectRoot: string, _arg: string): string {
+  const hooks = loadHooks(projectRoot);
+
+  if (!hooks.length) {
+    return chalk.dim("\n  No hooks configured.\n  Create .arx/hooks.json to add hooks.\n");
+  }
+
+  const eventIcons: Record<HookEvent, string> = {
+    pre_tool_use: "🔒",
+    post_tool_use: "⚡",
+    session_start: "🚀",
+    session_stop: "🛑",
+  };
+
+  const actionColors: Record<string, (s: string) => string> = {
+    block: chalk.red,
+    confirm: chalk.yellow,
+    warn: chalk.yellow,
+    run: chalk.green,
+  };
+
+  let out = `\n${chalk.bold.cyan("  Hooks")}  ${chalk.dim(`(${hooks.length} active)`)}
+
+  ${chalk.dim("Configure: .arx/hooks.json    │    /hook to list")}\n\n`;
+
+  for (const h of hooks) {
+    const icon = eventIcons[h.event] || "•";
+    const color = actionColors[h.action] || chalk.white;
+    out += `  ${icon} ${chalk.bold(h.name)}  ${color(h.action)}  ${chalk.dim(`on ${h.event}`)}\n`;
+    if (h.pattern) out += `    pattern: ${chalk.dim(h.pattern)}\n`;
+    if (h.tool) out += `    tool: ${chalk.dim(h.tool)}\n`;
+    if (h.message) out += `    ${chalk.dim(h.message)}\n`;
+    out += "\n";
+  }
+
+  out += chalk.dim("  To customize, edit .arx/hooks.json in your project root.\n");
+  return out;
 }
 
 function findModel(provider: string, query: string): string | null {

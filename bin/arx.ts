@@ -29,10 +29,11 @@ import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expand
 import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
 import { showBanner } from "../src/banner.js";
+import { loadHooks, runHooks, hasUncommittedChanges } from "../src/hooks.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 // ── Phase Icons ────────────────────────────────────────────────────
 
@@ -126,6 +127,14 @@ async function runInteractive(initialOpts: Record<string, string>) {
   if (!apiKey) {
     console.log(chalk.yellow(`  ⚠ no API key — use /key <***> or /provider to configure`));
   }
+
+  // ── Session start hooks ───────────────────────────────────────
+  const hooks = loadHooks(projectRoot);
+  const startResults = await runHooks(hooks, "session_start", { projectRoot });
+  for (const r of startResults) {
+    if (r.message) console.log(chalk.dim(`  [hook:${r.hook}] ${r.message}`));
+  }
+
   console.log();
 
   // History file
@@ -288,7 +297,15 @@ async function runInteractive(initialOpts: Record<string, string>) {
     if (!state.exit) rl.prompt();
   });
 
-  rl.on("close", () => {
+  rl.on("close", async () => {
+    // ── Session stop hooks ─────────────────────────────────────
+    const hooks = loadHooks(state.projectRoot);
+    if (hasUncommittedChanges(state.projectRoot)) {
+      const stopResults = await runHooks(hooks, "session_stop", { projectRoot: state.projectRoot });
+      for (const r of stopResults) {
+        if (r.message) console.log(chalk.yellow(`  ${r.message}`));
+      }
+    }
     saveHistory(historyFile, rl);
     console.log(chalk.dim("\n  see ya!\n"));
     process.exit(0);

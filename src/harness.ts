@@ -13,6 +13,7 @@ import { systemPrompt, compactionPrompt } from "./prompts.js";
 import { executeTool, setProjectRoot, TOOL_DEFS, toolTitle } from "./tools.js";
 import type { ContextFile } from "./context.js";
 import { loadContextFiles } from "./context.js";
+import { loadHooks, runHooks, isBlocked, type Hook, type HookResult } from "./hooks.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -179,10 +180,29 @@ export async function* runAgent(
     const toolResults: Array<{ tc: typeof toolCalls[0]; r: Awaited<ReturnType<typeof executeTool>> }> = [];
     let verified = false;
 
-    // Execute read-only tools in parallel
+    // ── Hooks: pre_tool_use ──────────────────────────────────────
+    const hooks = loadHooks(opts.projectRoot);
+    const blockedTools: Set<string> = new Set();
+    const hookMessages: string[] = [];
+
+    for (const tc of toolCalls) {
+      const ctx = { toolName: tc.name, toolInput: tc.input, projectRoot: opts.projectRoot };
+      const results = await runHooks(hooks, "pre_tool_use", ctx);
+      if (isBlocked(results)) {
+        blockedTools.add(tc.id);
+        for (const r of results) {
+          if (r.action === "block" || r.allowed === false) {
+            hookMessages.push(`[hook:${r.hook}] ${r.message}`);
+          }
+        }
+      }
+    }
+
+    // Execute read-only tools in parallel (skip blocked)
     if (readCalls.length > 0) {
+      const allowedReads = readCalls.filter(tc => !blockedTools.has(tc.id));
       const results = await Promise.all(
-        readCalls.map(tc => executeTool(tc.name, tc.input).then(r => ({ tc, r })))
+        allowedReads.map(tc => executeTool(tc.name, tc.input).then(r => ({ tc, r })))
       );
       for (const { tc, r } of results) {
         toolResults.push({ tc, r });
@@ -193,13 +213,61 @@ export async function* runAgent(
       }
     }
 
-    // Execute write tools sequentially (order matters)
+    // Execute write tools sequentially (skip blocked)
     for (const tc of writeCalls) {
+      if (blockedTools.has(tc.id)) continue;
       const r = await executeTool(tc.name, tc.input);
       toolResults.push({ tc, r });
       if (r.verifies && !verified) {
         verified = true;
         yield { type: "status", phase: "verify", label: "Verifying..." };
+      }
+    }
+
+    // Yield blocked tool results
+    for (const msg of hookMessages) {
+      yield {
+        type: "tool_result" as const,
+        toolId: "hook",
+        toolName: "hook",
+        toolOk: false,
+        toolOutput: msg,
+      };
+      resultBlocks.push({
+        type: "tool_result",
+        tool_use_id: "hook",
+        content: msg,
+        is_error: true,
+      });
+    }
+
+    // ── Hooks: post_tool_use ─────────────────────────────────────
+    for (const tr of toolResults) {
+      const ctx = { toolName: tr.tc.name, toolInput: tr.tc.input, toolOutput: tr.r.output, projectRoot: opts.projectRoot };
+      const postResults = await runHooks(hooks, "post_tool_use", ctx);
+      for (const pr of postResults) {
+        if (pr.action === "run" && pr.output) {
+          yield {
+            type: "status" as const,
+            phase: "verify",
+            label: pr.message || `hook: ${pr.hook}`,
+          };
+          // Don't add hook run output to conversation — it's for display only
+        } else if (pr.action === "warn") {
+          yield {
+            type: "tool_result" as const,
+            toolId: "hook",
+            toolName: "hook",
+            toolOk: true,
+            toolOutput: `[hook:${pr.hook}] ${pr.message}`,
+          };
+          resultBlocks.push({
+            type: "tool_result",
+            tool_use_id: "hook",
+            content: `[hook:${pr.hook}] ${pr.message}`,
+            is_error: false,
+          });
+        }
       }
     }
 

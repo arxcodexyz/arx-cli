@@ -21,6 +21,7 @@ ArxCode CLI is an autonomous coding agent that runs **locally on your machine** 
 - 💬 **Interactive REPL** — slash commands: `/model`, `/provider`, `/temp`, `/save`, `/load`, `/compact`, and more.
 - 📎 **@file references** — `@path/to/file.ts` injects file contents into your prompt. Supports line ranges (`@file.ts:10-20`).
 - 📊 **Token counter** — `/tokens` shows session token breakdown with cost estimates. Per-exchange token display (↥input ↧output).
+- 🛡️ **Hooks system** — proactive guardrails: block `rm -rf /`, confirm force push, auto-run `tsc` after file writes. 5 built-in defaults, configurable via `.arx/hooks.json`.
 - 🔄 **Context compaction** — `/compact` summarizes long conversations to save tokens.
 - 🌐 **Web search** — `/search` slash command + `web_search` agent tool via Whoogle. Get up-to-date docs, API refs, package versions.
 - 🔍 **Code review** — `/review` analyzes git diffs, staged changes, branches, commits with security & style checks.
@@ -392,6 +393,7 @@ export function createMyProvider(apiKey: string, model?: string): LLMProvider {
 - [x] `/alias` command shortcuts
 - [x] `/setup` provider wizard
 - [x] Wallet generation (/wallet) + balance check (/balance)
+- [x] Hooks system — guardrails (block, confirm, warn, auto-run)
 - [ ] TUI mode (Ink/React terminal UI)
 - [ ] Skills/extension system
 - [ ] Remote/SSH agent mode

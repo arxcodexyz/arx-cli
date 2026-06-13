@@ -293,8 +293,17 @@ async function runInteractive(initialOpts: Record<string, string>) {
 
     // Normal prompt → send to agent
     saveLine(historyFile, trimmed);
+
+    // Pause readline during agent streaming to prevent input conflicts
+    rl.pause();
     await processInput(trimmed, state, rl);
-    if (!state.exit) rl.prompt();
+    if (state.exit) {
+      rl.close();
+      return;
+    }
+    // Resume and show next prompt
+    rl.resume();
+    rl.prompt();
   });
 
   rl.on("close", async () => {
@@ -308,7 +317,22 @@ async function runInteractive(initialOpts: Record<string, string>) {
     }
     saveHistory(historyFile, rl);
     console.log(chalk.dim("\n  see ya!\n"));
-    process.exit(0);
+    // Let process exit naturally — don't force process.exit()
+  });
+
+  // Ctrl+C clears the current line instead of exiting
+  rl.on("SIGINT", () => {
+    // Clear current line and show fresh prompt
+    process.stdout.write("\r\x1b[K");
+    const hasInput = (rl as any).line?.length > 0;
+    if (hasInput) {
+      console.log(chalk.dim("^C (type /quit to exit)"));
+    } else {
+      // Empty line — exit on second Ctrl+C
+      rl.close();
+      return;
+    }
+    rl.prompt();
   });
 }
 

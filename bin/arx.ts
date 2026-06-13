@@ -376,7 +376,11 @@ async function processInput(input: string, state: SessionState, rl: readline.Int
   }
 
   // Run agent with context files and conversation history
-  await streamAgent(provider, expandedInput, state.projectRoot, state.maxSteps, state);
+  try {
+    await streamAgent(provider, expandedInput, state.projectRoot, state.maxSteps, state);
+  } catch (err) {
+    console.log(chalk.red(`\n  ✗ Agent error: ${err instanceof Error ? err.message : err}\n`));
+  }
 
   // Clear history if requested
   if (state.clearHistory) {
@@ -624,28 +628,34 @@ async function streamAgent(
     } else {
       console.error(chalk.red(`\n  ✗ ${err instanceof Error ? err.message : err}\n`));
     }
+    // Don't save partial state on error
+    return;
   }
 
   // Save conversation to session state
   if (state) {
-    // Push user prompt
-    state.conversation = state.conversation ?? [];
-    state.conversation.push({
-      role: "user",
-      content: [{ type: "text", text: prompt }],
-    });
-    // Push assistant response
-    const assistantBlocks: ContentBlock[] = [];
-    if (currentText) assistantBlocks.push({ type: "text", text: currentText });
-    for (const tc of currentToolCalls) {
-      assistantBlocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
-    }
-    if (assistantBlocks.length > 0) {
-      state.conversation.push({ role: "assistant", content: assistantBlocks });
-    }
-    // Push tool results as a user message (so agent sees them)
-    if (currentToolResults.length > 0) {
-      state.conversation.push({ role: "user", content: currentToolResults });
+    try {
+      // Push user prompt
+      state.conversation = state.conversation ?? [];
+      state.conversation.push({
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+      });
+      // Push assistant response
+      const assistantBlocks: ContentBlock[] = [];
+      if (currentText) assistantBlocks.push({ type: "text", text: currentText });
+      for (const tc of currentToolCalls) {
+        assistantBlocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+      }
+      if (assistantBlocks.length > 0) {
+        state.conversation.push({ role: "assistant", content: assistantBlocks });
+      }
+      // Push tool results as a user message (so agent sees them)
+      if (currentToolResults.length > 0) {
+        state.conversation.push({ role: "user", content: currentToolResults });
+      }
+    } catch {
+      // Non-fatal: conversation tracking failed but agent completed
     }
   }
 }

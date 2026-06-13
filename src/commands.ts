@@ -206,7 +206,7 @@ export function handleCommand(input: string, state: SessionState): string | null
   // /quit, /exit, /q
   if (trimmed === "/quit" || trimmed === "/exit" || trimmed === "/q") {
     state.exit = true;
-    return chalk.dim("\n  👋 Bye!\n");
+    return chalk.dim("\n  see ya!\n");
   }
 
   // /compact [instructions] — compress conversation context

@@ -71,9 +71,7 @@ async function runOneShot(prompt: string, opts: Record<string, string>) {
   const expandedPrompt = expandAlias(prompt);
 
   console.log(showBanner(VERSION));
-  console.log(chalk.dim(`   Provider : ${providerCfg.provider}`));
-  console.log(chalk.dim(`   Model    : ${providerCfg.model || "(default)"}`));
-  console.log(chalk.dim(`   Project  : ${projectRoot}`));
+  console.log(chalk.dim(`  ${providerCfg.provider}  ·  ${providerCfg.model || "(default)"}  ·  ${projectRoot}`));
   console.log();
 
   let provider;
@@ -120,14 +118,13 @@ async function runInteractive(initialOpts: Record<string, string>) {
 
   // Banner
   console.log(showBanner(VERSION));
-  console.log(chalk.dim(`  Private AI builder. BYOK. Type /help for commands.`));
-  console.log(chalk.dim(`  Provider: ${providerId}  |  Model: ${model || "(default)"}  |  Project: ${projectRoot}`));
+  console.log(chalk.dim(`  ${providerId}  ·  ${model || "(default)"}  ·  ${projectRoot}`));
   if (contextFiles.length > 0) {
     const names = contextFiles.map(f => f.name).join(", ");
-    console.log(chalk.dim(`  Context:  ${names}`));
+    console.log(chalk.dim(`  context: ${names}`));
   }
   if (!apiKey) {
-    console.log(chalk.yellow(`  ⚠ No API key set. Use /key <***> or /provider to configure.`));
+    console.log(chalk.yellow(`  ⚠ no API key — use /key <***> or /provider to configure`));
   }
   console.log();
 
@@ -293,7 +290,7 @@ async function runInteractive(initialOpts: Record<string, string>) {
 
   rl.on("close", () => {
     saveHistory(historyFile, rl);
-    console.log(chalk.dim("\n  Bye!\n"));
+    console.log(chalk.dim("\n  see ya!\n"));
     process.exit(0);
   });
 }
@@ -499,15 +496,28 @@ async function streamAgent(
       temperature: state?.temperature,
     })) {
       switch (ev.type) {
-        case "status":
-          if (spinner) spinner.stop();
-          spinner = ora({ text: chalk.blue(phaseIcon(ev.phase || "") + " " + (ev.label || ev.phase || "")), color: "blue" }).start();
+        case "status": {
+          const label = ev.label || ev.phase || "";
+          const icon = phaseIcon(ev.phase || "");
+          // Smoother spinner — only for plan/act phases
+          if (ev.phase === "plan" || ev.phase === "act") {
+            if (spinner) spinner.text = chalk.blue(`${icon} ${label}`);
+            else spinner = ora({ text: chalk.blue(`${icon} ${label}`), color: "blue" }).start();
+          } else {
+            if (spinner) { spinner.stop(); spinner = null; }
+            if (ev.phase === "settle") {
+              // done is handled separately
+            } else {
+              console.log(chalk.dim(`  ${icon} ${label}`));
+            }
+          }
           break;
+        }
 
         case "assistant_delta":
           if (spinner) { spinner.stop(); spinner = null; }
-          // On first text chunk, print a subtle prefix
-          if (!currentText) process.stdout.write(chalk.dim("  ╰─ "));
+          // First text chunk — clean prefix
+          if (!currentText) process.stdout.write(chalk.dim("  ┃ "));
           process.stdout.write(highlightChunk(hstate, ev.text!));
           currentText += ev.text!;
           break;
@@ -516,17 +526,22 @@ async function streamAgent(
           if (currentText) process.stdout.write("\n");
           break;
 
-        case "tool_call":
+        case "tool_call": {
           if (spinner) { spinner.stop(); spinner = null; }
-          console.log(`  ${chalk.yellow("⚙")} ${ev.toolTitle}`);
+          // Show tool call with cleaner icon
+          const title = ev.toolTitle || ev.toolName || "";
+          console.log(`  ${chalk.cyan("◇")} ${chalk.cyan(title)}`);
           currentToolCalls.push({ id: ev.toolId!, name: ev.toolName!, input: ev.toolInput! });
           break;
+        }
 
         case "tool_result":
           if (ev.toolOk) {
-            console.log(`    ${chalk.green("✓")} ${shorten(ev.toolOutput || "", 120)}`);
+            const out = shorten(ev.toolOutput || "", 100);
+            console.log(`  ${chalk.dim("┆")} ${chalk.green("✓")} ${chalk.dim(out)}`);
           } else {
-            console.log(`    ${chalk.red("✗")} ${shorten(ev.toolOutput || "", 120)}`);
+            const out = shorten(ev.toolOutput || "", 100);
+            console.log(`  ${chalk.dim("┆")} ${chalk.red("✗")} ${chalk.red(out)}`);
           }
           currentToolResults.push({
             type: "tool_result",
@@ -552,27 +567,33 @@ async function streamAgent(
           break;
 
         case "done":
-          if (spinner) spinner.stop();
+          if (spinner) { spinner.stop(); spinner = null; }
           // Flush any remaining highlighted buffer
           if (hstate.buffer) {
             process.stdout.write(hstate.inBlock ? highlightCode(hstate.buffer, hstate.lang) : hstate.buffer);
             hstate.buffer = "";
           }
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          const tokenInfo = (totalInputTokens > 0 || totalOutputTokens > 0)
-            ? `  |  ${chalk.dim(`↥${totalInputTokens} ↧${totalOutputTokens} tokens`)}`
+          const stepStr = `${ev.steps} step${ev.steps !== 1 ? "s" : ""}`;
+          const tokenStr = (totalInputTokens > 0 || totalOutputTokens > 0)
+            ? `  ↥${totalInputTokens.toLocaleString()} ↧${totalOutputTokens.toLocaleString()}`
             : "";
-          console.log(chalk.bold.cyan(`  ✓ Done in ${ev.steps} steps (${elapsed}s)${tokenInfo}`));
 
-          // Auto-compaction hint when conversation grows large
+          // Clean boxed summary
+          const left = chalk.green("✓");
+          const time = chalk.dim(`${elapsed}s`);
+          const tokens = tokenStr ? chalk.dim(tokenStr) : "";
+          console.log(`  ${chalk.dim("┌─")} ${left} ${chalk.bold.white(stepStr)} ${time} ${tokens}`);
+
+          // Hint: next steps
           if (state) {
-            const msgCount = (state.conversation?.length ?? 0) + 2; // +2 for current turn
-            const estCtx = msgCount * 2000;
+            const msgCount = (state.conversation?.length ?? 0) + 2;
             if (msgCount > 15) {
-              console.log(chalk.dim(`  💡 ${msgCount} messages (~${(estCtx / 1000).toFixed(0)}K ctx) — /compact to save tokens`));
+              const estCtx = ((msgCount * 2000) / 1000).toFixed(0);
+              console.log(`  ${chalk.dim("│")} ${chalk.dim(`💡 ${msgCount} msgs (~${estCtx}K ctx) — /compact to save tokens`)}`);
             }
           }
-
+          console.log(`  ${chalk.dim("└─")}`);
           console.log();
           // Terminal bell notification
           process.stdout.write("\x07");

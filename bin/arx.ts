@@ -861,8 +861,8 @@ function highlightCode(code: string, lang: string): string {
  * Only works for existing files. Non-existent paths stay as-is.
  */
 function expandFileRefs(input: string, projectRoot: string): string {
-  // Match @<path> that starts at word boundary and looks like a file path
-  const re = /(?:^|\s)@([^\s]+\.[a-zA-Z]{1,10}(?::\d+(?:-\d+)?)?)(?=\s|$)/g;
+  // Match @<path> — files with or without extension, optional :line-range
+  const re = /(?:^|\s)@([^\s:]+(?:\.[a-zA-Z]{1,10})?(?::\d+(?:-\d+)?)?)(?=\s|$)/g;
   
   let result = input;
   let match: RegExpExecArray | null;

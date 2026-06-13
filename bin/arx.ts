@@ -32,7 +32,7 @@ import { showBanner } from "../src/banner.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 // ── Phase Icons ────────────────────────────────────────────────────
 
@@ -539,6 +539,11 @@ async function streamAgent(
         case "usage":
           totalInputTokens += ev.inputTokens ?? 0;
           totalOutputTokens += ev.outputTokens ?? 0;
+          // Track in session state for /tokens command
+          if (state) {
+            state.totalInputTokens = (state.totalInputTokens ?? 0) + (ev.inputTokens ?? 0);
+            state.totalOutputTokens = (state.totalOutputTokens ?? 0) + (ev.outputTokens ?? 0);
+          }
           break;
 
         case "error":
@@ -557,7 +562,18 @@ async function streamAgent(
           const tokenInfo = (totalInputTokens > 0 || totalOutputTokens > 0)
             ? `  |  ${chalk.dim(`↥${totalInputTokens} ↧${totalOutputTokens} tokens`)}`
             : "";
-          console.log(chalk.bold.cyan(`  ✓ Done in ${ev.steps} steps (${elapsed}s)${tokenInfo}\n`));
+          console.log(chalk.bold.cyan(`  ✓ Done in ${ev.steps} steps (${elapsed}s)${tokenInfo}`));
+
+          // Auto-compaction hint when conversation grows large
+          if (state) {
+            const msgCount = (state.conversation?.length ?? 0) + 2; // +2 for current turn
+            const estCtx = msgCount * 2000;
+            if (msgCount > 15) {
+              console.log(chalk.dim(`  💡 ${msgCount} messages (~${(estCtx / 1000).toFixed(0)}K ctx) — /compact to save tokens`));
+            }
+          }
+
+          console.log();
           // Terminal bell notification
           process.stdout.write("\x07");
           break;

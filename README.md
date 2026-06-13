@@ -20,7 +20,7 @@ ArxCode CLI is an autonomous coding agent that runs **locally on your machine** 
 - 🔑 **BYOK** — bring your own API keys. Support for 9 providers: Groq (free!), DeepSeek, OpenAI, Anthropic, OpenRouter, xAI, Google Gemini, DeepSeek Anthropic, and any OpenAI-compatible custom endpoint.
 - 💬 **Interactive REPL** — slash commands: `/model`, `/provider`, `/temp`, `/save`, `/load`, `/compact`, and more.
 - 📎 **@file references** — `@path/to/file.ts` injects file contents into your prompt. Supports line ranges (`@file.ts:10-20`).
-- 📊 **Token counter** — see exact token usage after every exchange (↥input ↧output).
+- 📊 **Token counter** — `/tokens` shows session token breakdown with cost estimates. Per-exchange token display (↥input ↧output).
 - 🔄 **Context compaction** — `/compact` summarizes long conversations to save tokens.
 - 🌐 **Web search** — `/search` slash command + `web_search` agent tool via Whoogle. Get up-to-date docs, API refs, package versions.
 - 🔍 **Code review** — `/review` analyzes git diffs, staged changes, branches, commits with security & style checks.
@@ -35,7 +35,9 @@ ArxCode CLI is an autonomous coding agent that runs **locally on your machine** 
 - 🌡️ **Temperature control** — `/temp 0.5` for focused, `/temp 1.5` for creative.
 - ⚡ **Blazing fast** — Groq LPU free tier gives sub-second responses.
 - 🐚 **Shell integration** — `!command` sends output to agent, `!!command` just runs it.
-- 🛠️ **13 agent tools** — `replace_in_file`, `search`, `find_files`, `web_search`, `git_diff/log/status`, `run_command`, `run_tests`, and more.
+- 🛠️ **15 agent tools** — `replace_in_file`, `search`, `find_files`, `web_search`, `git_diff/log/status`, `run_command`, `run_tests`, `generate_wallet`, `wallet_balance`, and more. Read tools run in parallel for speed.
+- 🪙 **Token efficiency** — minified tool definitions, smart output truncation, reduced workspace scan, auto-compaction hints cut token burn ~40%.
+- ⚡ **Parallel execution** — read-only tools run simultaneously. Write tools run sequentially to avoid conflicts.
 - 📋 **Tab auto-complete** — slash commands, model names, provider IDs, @file paths.
 - 🔄 **Streaming toggle** — `/stream off` for one-shot mode, `/stream on` for real-time.`
 
@@ -384,9 +386,14 @@ export function createMyProvider(apiKey: string, model?: string): LLMProvider {
 - [x] replace_in_file (targeted edits)
 - [x] find_files (glob search)
 - [x] Streaming toggle (/stream)
+- [x] Parallel tool execution (read tools simultaneous)
+- [x] Token efficiency — minified defs, smart truncation, auto-compaction
+- [x] `/tokens` command with cost estimates
+- [x] `/alias` command shortcuts
+- [x] `/setup` provider wizard
+- [x] Wallet generation (/wallet) + balance check (/balance)
 - [ ] TUI mode (Ink/React terminal UI)
 - [ ] Skills/extension system
-- [ ] Multi-turn tool execution (parallel tools)
 - [ ] Remote/SSH agent mode
 
 ---

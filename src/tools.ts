@@ -15,219 +15,153 @@ import type { ToolDef } from "./llm/types.js";
 export const TOOL_DEFS: ToolDef[] = [
   {
     name: "list_files",
-    description:
-      "List files in a directory. Pass a path relative to the project root, or omit to list root.",
+    description: "List files in a directory. Omit dir for root.",
     input_schema: {
       type: "object",
-      properties: {
-        dir: {
-          type: "string",
-          description: "Directory path relative to project root (default: '.')",
-        },
-      },
+      properties: { dir: { type: "string", description: "Dir relative to project root (default: '.')" } },
       additionalProperties: false,
     },
   },
   {
     name: "read_file",
-    description: "Read the full contents of a file. Returns line-numbered output.",
+    description: "Read a file with line numbers. Always read before editing.",
     input_schema: {
       type: "object",
-      properties: {
-        path: { type: "string", description: "File path relative to project root" },
-      },
-      required: ["path"],
-      additionalProperties: false,
+      properties: { path: { type: "string", description: "File path relative to project root" } },
+      required: ["path"], additionalProperties: false,
     },
   },
   {
     name: "write_file",
-    description:
-      "Create or overwrite a file with the given COMPLETE contents. Always pass the full file — never a fragment or diff.",
+    description: "Create/overwrite a file with COMPLETE contents. Never pass fragments.",
     input_schema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to project root" },
         content: { type: "string", description: "Complete file contents" },
       },
-      required: ["path", "content"],
-      additionalProperties: false,
+      required: ["path", "content"], additionalProperties: false,
     },
   },
   {
     name: "delete_file",
-    description: "Delete a file from the project.",
+    description: "Delete a file.",
     input_schema: {
       type: "object",
-      properties: {
-        path: { type: "string", description: "File path relative to project root" },
-      },
-      required: ["path"],
-      additionalProperties: false,
+      properties: { path: { type: "string", description: "File path relative to project root" } },
+      required: ["path"], additionalProperties: false,
     },
   },
   {
     name: "search",
-    description:
-      "Search for a substring or regex across the project. Returns file:line matches.",
+    description: "Grep for a substring/regex. Returns file:line matches (max 40).",
     input_schema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Substring or regex to search for" },
-        file_glob: {
-          type: "string",
-          description: "Optional glob to filter files (e.g. '*.ts')",
-        },
-        path: {
-          type: "string",
-          description: "Optional subdirectory to scope the search",
-        },
+        file_glob: { type: "string", description: "Optional glob filter (e.g. '*.ts')" },
+        path: { type: "string", description: "Optional subdirectory to scope search" },
       },
-      required: ["query"],
-      additionalProperties: false,
+      required: ["query"], additionalProperties: false,
     },
   },
   {
     name: "run_command",
-    description:
-      "Run a shell command in the project directory. Use for install, build, lint, typecheck, tests. Output is captured and returned.",
+    description: "Run a shell command in the project dir. Use for install, build, lint, tests.",
     input_schema: {
       type: "object",
-      properties: {
-        command: { type: "string", description: "Shell command to execute" },
-      },
-      required: ["command"],
-      additionalProperties: false,
+      properties: { command: { type: "string", description: "Shell command to execute" } },
+      required: ["command"], additionalProperties: false,
     },
   },
   {
     name: "run_tests",
-    description:
-      "Run the project's test suite. Detects the test runner (jest, vitest, pytest, cargo test, etc.) and runs it.",
+    description: "Run project test suite. Auto-detects runner (jest, vitest, pytest, etc.).",
     input_schema: {
       type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Optional file or directory to scope tests",
-        },
-      },
+      properties: { path: { type: "string", description: "Optional file/dir to scope tests" } },
       additionalProperties: false,
     },
   },
   {
     name: "web_search",
-    description:
-      "Search the web for up-to-date information. Use for current events, docs, API references, package versions, error codes, or anything not in the project files. Returns title, URL, and snippet for each result.",
+    description: "Search the web for current docs, versions, APIs. Returns title+URL+snippet.",
     input_schema: {
       type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "What to search for — be specific (e.g. 'typescript 5.7 release notes')",
-        },
-      },
-      required: ["query"],
-      additionalProperties: false,
+      properties: { query: { type: "string", description: "Search query — be specific" } },
+      required: ["query"], additionalProperties: false,
     },
   },
   {
     name: "replace_in_file",
-    description:
-      "Perform exact string replacement in a file. Find old_string and replace it with new_string. The old_string must be unique in the file — include surrounding context lines to make it unique. This is the preferred editing tool; use write_file only when creating a new file.",
+    description: "Exact string replacement. old_string must be unique — include 2-3 surrounding context lines. Preferred over write_file for edits.",
     input_schema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to project root" },
-        old_string: { type: "string", description: "Exact text to find and replace. Must be unique in the file — include 2-3 surrounding lines for uniqueness." },
-        new_string: { type: "string", description: "Replacement text. Use empty string to delete." },
+        old_string: { type: "string", description: "Exact text to replace. Must be unique — include surrounding context." },
+        new_string: { type: "string", description: "Replacement text. Empty = delete." },
       },
-      required: ["path", "old_string", "new_string"],
-      additionalProperties: false,
+      required: ["path", "old_string", "new_string"], additionalProperties: false,
     },
   },
   {
     name: "find_files",
-    description:
-      "Find files by name pattern (glob). Use to discover project structure, locate config files, find all files matching a pattern. Faster than search for file-name queries.",
+    description: "Find files by glob pattern (e.g. '*.ts', '**/*.test.ts'). Faster than search for filename queries.",
     input_schema: {
       type: "object",
       properties: {
-        pattern: { type: "string", description: "File name pattern with glob (e.g. '*.ts', '**/*.test.ts', '*.config.*')" },
-        dir: { type: "string", description: "Optional subdirectory to scope search (default: project root)" },
+        pattern: { type: "string", description: "Glob pattern (e.g. '*.ts', '**/*.config.*')" },
+        dir: { type: "string", description: "Optional subdirectory (default: project root)" },
       },
-      required: ["pattern"],
-      additionalProperties: false,
+      required: ["pattern"], additionalProperties: false,
     },
   },
   {
     name: "git_diff",
-    description:
-      "Show git diff for the working tree. Use to see what changed before committing, review unstaged/staged changes, or compare branches.",
+    description: "Show git diff: unstaged, staged, branch, or commit.",
     input_schema: {
       type: "object",
-      properties: {
-        target: { type: "string", description: "What to diff: 'unstaged' (default), 'staged', a branch name, commit SHA, or 'branchA..branchB'" },
-      },
+      properties: { target: { type: "string", description: "'unstaged' (default), 'staged', branch, SHA, or 'A..B'" } },
       additionalProperties: false,
     },
   },
   {
     name: "git_log",
-    description:
-      "Show recent git commit history. Use to understand project history, find when a change was made, or see recent work.",
+    description: "Show recent git commits.",
     input_schema: {
       type: "object",
       properties: {
-        count: { type: "number", description: "Number of commits to show (default: 10, max: 30)" },
-        file: { type: "string", description: "Optional: show history for a specific file" },
+        count: { type: "number", description: "Commits to show (default: 10, max: 30)" },
+        file: { type: "string", description: "Optional: history for specific file" },
       },
       additionalProperties: false,
     },
   },
   {
     name: "git_status",
-    description:
-      "Show the working tree status — staged, unstaged, and untracked files. Use before committing to see what files have changed.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
+    description: "Show working tree status — staged, unstaged, untracked.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "generate_wallet",
-    description:
-      "Generate a new crypto wallet (private key + address). Supports EVM (Ethereum, BSC, Polygon, etc.) and Solana. Private keys are generated locally using cryptographically secure randomness — nothing is sent anywhere.",
+    description: "Generate crypto wallet (private key + address). EVM or Solana. Keys generated locally — nothing leaves your machine.",
     input_schema: {
       type: "object",
-      properties: {
-        chain: {
-          type: "string",
-          description: "Chain type: 'evm' (Ethereum, BSC, Polygon, Arbitrum, etc.) or 'solana'",
-        },
-      },
+      properties: { chain: { type: "string", description: "'evm' or 'solana'" } },
       additionalProperties: false,
     },
   },
   {
     name: "wallet_balance",
-    description:
-      "Check the native token balance of a wallet address. Uses public RPC endpoints. Returns balance in the native token (ETH, SOL, etc.).",
+    description: "Check native token balance. Uses public RPCs. Supports ethereum, bsc, polygon, arbitrum, solana, base.",
     input_schema: {
       type: "object",
       properties: {
-        chain: {
-          type: "string",
-          description: "Chain: 'ethereum', 'bsc', 'polygon', 'arbitrum', 'solana', or 'base'",
-        },
-        address: {
-          type: "string",
-          description: "Wallet address (0x... for EVM, base58 for Solana)",
-        },
+        chain: { type: "string", description: "Chain: ethereum, bsc, polygon, arbitrum, solana, base" },
+        address: { type: "string", description: "Wallet address (0x... for EVM, base58 for Solana)" },
       },
-      required: ["chain", "address"],
-      additionalProperties: false,
+      required: ["chain", "address"], additionalProperties: false,
     },
   },
 ];
@@ -353,13 +287,13 @@ export async function executeTool(name: string, input: Record<string, unknown>):
               if (lines[i].toLowerCase().includes(query.toLowerCase())) {
                 const rel = path.relative(projectRoot, file);
                 hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-                if (hits.length >= 60) break;
+                if (hits.length >= 40) break;
               }
             }
           } catch {
             // skip binary/unreadable files
           }
-          if (hits.length >= 60) break;
+          if (hits.length >= 40) break;
         }
 
         if (!hits.length) return { ok: true, output: "No matches found." };
@@ -377,13 +311,14 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           cwd: projectRoot,
           timeout: 60_000,
           encoding: "utf-8",
-          maxBuffer: 1_000_000,
+          maxBuffer: 500_000,
           stdio: ["pipe", "pipe", "pipe"],
         });
+        const capped = output.length > 8000 ? output.slice(0, 8000) + "\n... (truncated)" : output;
         return {
           ok: true,
           verifies: true,
-          output: `$ ${command}\n${output || "(no output)"}`,
+          output: `$ ${command}\n${capped || "(no output)"}`,
         };
       } catch (err: any) {
         const stderr = err.stderr || err.message || "";

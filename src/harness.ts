@@ -18,6 +18,21 @@ import * as path from "node:path";
 
 // ── Types ──────────────────────────────────────────────────────────
 
+/** Per-tool output cap in characters (saves tokens before sending to LLM) */
+const TOOL_OUTPUT_CAPS: Record<string, number> = {
+  read_file: 12000,      // code files can be long
+  search: 5000,           // grep results
+  run_command: 6000,      // shell output
+  run_tests: 4000,        // test output
+  web_search: 3000,       // search snippets
+  git_diff: 8000,         // diffs can be large
+  git_log: 4000,          // commit history
+  git_status: 3000,       // status
+  list_files: 3000,       // dir listing
+  find_files: 3000,       // glob results
+  // wallet tools: no cap (tiny output)
+};
+
 export interface RunOptions {
   prompt: string;
   projectRoot: string;
@@ -193,17 +208,23 @@ export async function* runAgent(
     toolResults.sort((a, b) => (tcMap.get(a.tc.id) ?? 0) - (tcMap.get(b.tc.id) ?? 0));
 
     for (const { tc, r } of toolResults) {
+      // Smart truncation: cap tool output to save tokens before sending to LLM
+      const maxLen = TOOL_OUTPUT_CAPS[tc.name] ?? 6000;
+      const truncated = r.output.length > maxLen
+        ? r.output.slice(0, maxLen) + `\n... (${r.output.length - maxLen} more chars)`
+        : r.output;
+
       yield {
         type: "tool_result",
         toolId: tc.id,
         toolName: tc.name,
         toolOk: r.ok,
-        toolOutput: r.output,
+        toolOutput: truncated,
       };
       resultBlocks.push({
         type: "tool_result",
         tool_use_id: tc.id,
-        content: r.output,
+        content: truncated,
         is_error: !r.ok,
       });
     }
@@ -225,11 +246,11 @@ export async function* runAgent(
   };
 }
 
-/** Quick scan to show the agent what files exist. Limited to 100 entries. */
+/** Quick scan to show the agent what files exist. Limited to 40 entries to save tokens. */
 function scanWorkspace(root: string): string[] {
   const files: string[] = [];
   try {
-    walk(root, root, files, 100);
+    walk(root, root, files, 40);
   } catch {
     // ignore scan errors
   }

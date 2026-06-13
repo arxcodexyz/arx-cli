@@ -80,6 +80,7 @@ export const SLASH_COMMANDS = [
   "/status", "/log", "/find", "/stream",
   "/wallet", "/balance",
   "/alias", "/setup",
+  "/tokens",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -107,6 +108,9 @@ export interface SessionState {
   commitPrompt?: string;
   /** Streaming toggle (default: true). Set by /stream command. */
   streaming?: boolean;
+  /** Cumulative token tracking for /tokens command */
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -351,6 +355,11 @@ export function handleCommand(input: string, state: SessionState): string | null
     return setupWizard(state);
   }
 
+  // /tokens — show token usage for current session
+  if (trimmed === "/tokens") {
+    return showTokens(state);
+  }
+
   // /key — set API key
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
@@ -404,7 +413,7 @@ function showTools(): string {
 
 function showHelp(): string {
   return `
-${chalk.bold.cyan("  ArxCode CLI — v0.2.0")}  ${chalk.dim("Private AI builder · BYOK · 15 tools · 25 commands")}
+${chalk.bold.cyan("  ArxCode CLI — v0.3.0")}  ${chalk.dim("Private AI builder · BYOK · 15 tools · 26 commands")}
 
   ${chalk.bold.yellow("▸ Session")}
   ${chalk.bold("/model")} [name]     Show or switch model
@@ -420,6 +429,7 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.2.0")}  ${chalk.dim("Private AI builder 
   ${chalk.bold("/project")} [dir]   Show or change project directory
   ${chalk.bold("/reload")}          Re-scan project context files (AGENTS.md etc)
   ${chalk.bold("/compact")} [instr] Compress conversation context (saves tokens)
+  ${chalk.bold("/tokens")}           Show session token usage & cost estimate
   ${chalk.bold("/tools")}           List available agent tools
 
   ${chalk.bold.yellow("▸ Files")}
@@ -463,6 +473,44 @@ ${chalk.bold.cyan("  Session")}
   Max steps: ${state.maxSteps}
   Temp     : ${temp}
   API Key  : ${state.apiKey ? chalk.green("✓") : chalk.red("✗ MISSING")}
+`;
+}
+
+function showTokens(state: SessionState): string {
+  const inp = state.totalInputTokens ?? 0;
+  const out = state.totalOutputTokens ?? 0;
+  const total = inp + out;
+
+  // Estimate cost based on provider
+  const rates: Record<string, { in: number; out: number }> = {
+    groq: { in: 0, out: 0 },
+    deepseek: { in: 0.14, out: 0.28 },
+    "deepseek-anthropic": { in: 0.14, out: 0.28 },
+    anthropic: { in: 3.0, out: 15.0 },
+    openai: { in: 1.25, out: 10.0 },
+    openrouter: { in: 3.0, out: 15.0 },
+    xai: { in: 2.0, out: 8.0 },
+    google: { in: 1.25, out: 5.0 },
+  };
+
+  const rate = rates[state.providerId] ?? { in: 1, out: 4 };
+  const costIn = (inp / 1_000_000) * rate.in;
+  const costOut = (out / 1_000_000) * rate.out;
+  const costTotal = costIn + costOut;
+
+  const msgCount = state.conversation?.length ?? 0;
+  const estTokens = msgCount * 2000; // rough estimate
+  const ctxPercent = total > 0 ? ((estTokens / (total + estTokens)) * 100).toFixed(0) : "0";
+
+  return `
+${chalk.bold.cyan("  Token Usage")}
+
+  ${chalk.yellow("▲")} Input:    ${chalk.bold(inp.toLocaleString())}  ${chalk.dim(`($${costIn.toFixed(4)})`)}
+  ${chalk.yellow("▼")} Output:   ${chalk.bold(out.toLocaleString())}  ${chalk.dim(`($${costOut.toFixed(4)})`)}
+  ${chalk.bold("Σ")} Total:    ${chalk.bold(total.toLocaleString())}  ${chalk.dim(`(~$${costTotal.toFixed(4)})`)}
+
+  ${chalk.dim("Messages:")} ${msgCount}  ${chalk.dim(`(~${estTokens.toLocaleString()} est. context tokens, ${ctxPercent}% of session)`)}
+  ${chalk.dim("Use /compact to shrink context and save tokens.")}
 `;
 }
 

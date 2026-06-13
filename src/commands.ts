@@ -142,23 +142,26 @@ export function handleCommand(input: string, state: SessionState): string | null
     if (!arg) {
       return showProviders(state);
     }
-    // Validate against registry
-    const meta = PROVIDER_REGISTRY[arg as ProviderId];
-    if (!meta) {
+    // Case-insensitive lookup
+    const argLower = arg.toLowerCase();
+    const providerId = Object.keys(PROVIDER_REGISTRY).find(
+      k => k.toLowerCase() === argLower
+    ) as ProviderId | undefined;
+    if (!providerId) {
       const valid = Object.keys(PROVIDER_REGISTRY).join(", ");
       return chalk.red(`\n  ✗ Unknown provider: ${arg}. Valid: ${valid}\n`);
     }
-    const newProvider = arg as ProviderId;
-    state.providerId = newProvider;
-    state.config.provider = newProvider;
+    const meta = PROVIDER_REGISTRY[providerId];
+    state.providerId = providerId;
+    state.config.provider = providerId;
     // Auto-pick first model for new provider
-    state.model = MODEL_PRESETS[newProvider]?.[0]?.id || meta.defaultModel;
+    state.model = MODEL_PRESETS[providerId]?.[0]?.id || meta.defaultModel;
     state.config.model = state.model;
     // Resolve key for new provider
     const keys = (state.config.keys as Record<string, string | undefined>) ?? {};
-    const key = keys[newProvider] || state.apiKey;
+    const key = keys[providerId] || state.apiKey;
     if (key) state.apiKey = key;
-    const hasKey = keys[newProvider];
+    const hasKey = keys[providerId];
 
     return chalk.green(`\n  ✓ Provider: ${chalk.bold(meta.name)} | Model: ${state.model} | Key: ${hasKey ? "✓" : "✗ MISSING"}\n`);
   }

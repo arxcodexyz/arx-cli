@@ -25,7 +25,8 @@ import { createProvider } from "../src/llm/index.js";
 import { runAgent, type HarnessEvent } from "../src/harness.js";
 import { loadConfig, resolveProviderConfig, configStatus } from "../src/config.js";
 import { LLMError, PROVIDER_REGISTRY } from "../src/llm/types.js";
-import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias } from "../src/commands.js";
+import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias, handleRecipe } from "../src/commands.js";
+import { loadRecipes, getRecipe, substituteVars, formatRecipeList, formatRecipeShow, initBuiltinRecipes, resolveVars, deleteRecipe } from "../src/recipes.js";
 import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
 import { showBanner } from "../src/banner.js";
@@ -292,7 +293,7 @@ async function runInteractive(initialOpts: Record<string, string>) {
         return;
       }
       // Auto-trigger code review if queued by /review
-      if (state.reviewPrompt || state.commitPrompt) {
+      if (state.reviewPrompt || state.commitPrompt || state.recipePrompt) {
         await processInput("", state, rl);
       }
       if (!state.exit) rl.prompt();
@@ -396,9 +397,39 @@ async function processInput(input: string, state: SessionState, rl: readline.Int
     return;
   }
 
+  // Handle pending recipe variable collection
+  if (state.recipePending) {
+    const { name, values, missing } = state.recipePending;
+    const varName = missing[0];
+    values[varName] = input;
+    const remaining = missing.slice(1);
+
+    if (remaining.length > 0) {
+      state.recipePending = { name, values, missing: remaining };
+      const recipe = getRecipe(name);
+      const v = recipe?.variables.find(rv => rv.name === remaining[0]);
+      const desc = v?.description ? ` (${v.description})` : "";
+      console.log(chalk.cyan(`  Enter ${chalk.bold("{{" + remaining[0] + "}}")}${chalk.dim(desc)}:\n`));
+      return;
+    }
+
+    // All vars collected — resolve and queue
+    state.recipePending = undefined;
+    const recipe = getRecipe(name);
+    if (!recipe) {
+      console.log(chalk.red(`  ✗ Recipe "${name}" not found.\n`));
+      return;
+    }
+    state.recipePrompt = substituteVars(recipe.body, values);
+    console.log(chalk.cyan(`  🍳 Running recipe: ${chalk.bold(name)}\n`));
+  }
+
   // Handle code review if pending
   let prompt: string;
-  if (state.reviewPrompt) {
+  if (state.recipePrompt) {
+    prompt = state.recipePrompt;
+    state.recipePrompt = undefined;
+  } else if (state.reviewPrompt) {
     prompt = state.reviewPrompt;
     state.reviewPrompt = undefined;
     // If user typed additional instructions, append them
@@ -906,6 +937,82 @@ program
       // Interactive REPL mode
       await runInteractive(opts);
     }
+  });
+
+// ── Recipe subcommand ────────────────────────────────────────────────
+
+const recipeCmd = program
+  .command("recipe")
+  .description("Manage and run prompt recipes");
+
+recipeCmd
+  .command("list")
+  .description("List all available recipes")
+  .action(() => {
+    console.log(formatRecipeList(loadRecipes()));
+  });
+
+recipeCmd
+  .command("init")
+  .description("Create built-in recipes")
+  .action(() => {
+    const created = initBuiltinRecipes();
+    console.log(chalk.green(`  ✓ Created ${created.length} built-in recipes in ~/.arx/recipes/\n`));
+    for (const f of created) console.log(chalk.dim(`  ${f}`));
+    console.log(`\n  ${chalk.dim("Run: arx recipe list")}`);
+  });
+
+recipeCmd
+  .command("show")
+  .description("Show a recipe's full content")
+  .argument("<name>", "Recipe name")
+  .action((name: string) => {
+    const recipe = getRecipe(name);
+    if (!recipe) {
+      console.log(chalk.red(`  ✗ Recipe "${name}" not found.`));
+      process.exit(1);
+    }
+    console.log(formatRecipeShow(recipe));
+  });
+
+recipeCmd
+  .command("run")
+  .description("Run a recipe as a one-shot agent prompt (REPL only)")
+  .argument("<name>", "Recipe name")
+  .argument("[vars...]", "key=value variable values")
+  .action((name: string, vars: string[]) => {
+    console.log(chalk.yellow(`  ⚠ "arx recipe run" works best in interactive mode (/recipe run)`));
+    console.log(chalk.dim(`  Recipe: ${name}`));
+    console.log(chalk.dim(`  Run: arx "recipe run ${name} ${vars.join(" ")}" from interactive mode\n`));
+    const recipe = getRecipe(name);
+    if (!recipe) {
+      console.log(chalk.red(`  ✗ Recipe "${name}" not found.`));
+      process.exit(1);
+    }
+    const inlineVars: Record<string, string> = {};
+    for (const v of vars) {
+      const eq = v.indexOf("=");
+      if (eq !== -1) inlineVars[v.slice(0, eq)] = v.slice(eq + 1).replace(/^"|"$/g, "");
+    }
+    const { values, missing } = resolveVars(recipe, inlineVars);
+    if (missing.length > 0) {
+      console.log(chalk.red(`  ✗ Missing required variables: ${missing.join(", ")}\n`));
+      console.log(chalk.dim(`  Usage: arx recipe run ${name} ${recipe.variables.map(v => `${v.name}=<value>`).join(" ")}`));
+      process.exit(1);
+    }
+    console.log(chalk.cyan(`  ${substituteVars(recipe.body, values)}\n`));
+  });
+
+recipeCmd
+  .command("delete")
+  .description("Delete a recipe")
+  .argument("<name>", "Recipe name")
+  .action((name: string) => {
+    if (!deleteRecipe(name)) {
+      console.log(chalk.red(`  ✗ Recipe "${name}" not found.`));
+      process.exit(1);
+    }
+    console.log(chalk.green(`  ✓ Deleted recipe: ${name}`));
   });
 
 program.parse();

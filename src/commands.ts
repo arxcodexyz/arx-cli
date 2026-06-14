@@ -25,6 +25,11 @@ import {
   loadRemoteConfig, saveRemoteConfig, remoteStatus, parseConnectionString,
   type RemoteConfig, type RemoteSession, type RemoteTransport,
 } from "./remote.js";
+import {
+  loadRecipes, getRecipe, substituteVars, resolveVars,
+  formatRecipeList, formatRecipeShow, createRecipeFile, deleteRecipe, initBuiltinRecipes,
+  type Recipe,
+} from "./recipes.js";
 
 // ── Model Presets ───────────────────────────────────
 
@@ -94,6 +99,7 @@ export const SLASH_COMMANDS = [
   "/skill",
   "/mcp",
   "/remote",
+  "/recipe",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -130,6 +136,10 @@ export interface SessionState {
   remoteTransport?: RemoteTransport;
   /** Pending MCP action executed by bin/arx.ts on next prompt */
   mcpPending?: "connect" | "disconnect";
+  /** Fully-resolved recipe prompt ready to send to the agent */
+  recipePrompt?: string;
+  /** Pending recipe run — waiting for missing required vars from the user */
+  recipePending?: { name: string; values: Record<string, string>; missing: string[] };
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -425,6 +435,12 @@ export function handleCommand(input: string, state: SessionState): string | null
       return chalk.yellow("\n  ⚡ MCP disconnect queued. Send your next prompt to disconnect.\n");
     }
     return chalk.red(`\n  ✗ Unknown: ${arg}. Use: /mcp list | /mcp add <name> | /mcp config <name> <key>=<val> | /mcp presets | /mcp connect | /mcp disconnect\n`);
+  }
+
+  // /recipe — manage and run prompt recipes
+  if (trimmed === "/recipe" || trimmed.startsWith("/recipe ")) {
+    const rest = trimmed.slice(8).trim();
+    return handleRecipe(rest, state);
   }
 
   // /remote — connect/disconnect SSH remote agent
@@ -1705,4 +1721,105 @@ function setupWizard(state: SessionState): string {
 
   out += `\n${chalk.dim("  Type /help for all commands, /tools for agent tools.\n")}`;
   return out;
+}
+
+// ── Recipe System ────────────────────────────────────────────────────
+
+/**
+ * Parse inline key=value pairs from a string.
+ * Handles both `key=value` and `key="value with spaces"`.
+ */
+function parseInlineVars(s: string): { name: string; vars: Record<string, string> } {
+  const tokens = s.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  const name = tokens[0] ?? "";
+  const vars: Record<string, string> = {};
+  for (const tok of tokens.slice(1)) {
+    const eq = tok.indexOf("=");
+    if (eq === -1) continue;
+    const key = tok.slice(0, eq);
+    const val = tok.slice(eq + 1).replace(/^"|"$/g, "");
+    vars[key] = val;
+  }
+  return { name, vars };
+}
+
+export function handleRecipe(rest: string, state: SessionState): string | null {
+  // /recipe (no subcommand) or /recipe list
+  if (!rest || rest === "list") {
+    return formatRecipeList(loadRecipes());
+  }
+
+  // /recipe init
+  if (rest === "init") {
+    const created = initBuiltinRecipes();
+    let out = chalk.green(`\n  ✓ Created ${created.length} built-in recipes in ~/.arx/recipes/\n\n`);
+    for (const f of created) {
+      out += `  ${chalk.dim(f)}\n`;
+    }
+    out += `\n  ${chalk.dim("Run /recipe list to see them.")}\n`;
+    return out;
+  }
+
+  // /recipe show <name>
+  if (rest.startsWith("show ")) {
+    const name = rest.slice(5).trim();
+    const recipe = getRecipe(name);
+    if (!recipe) return chalk.red(`\n  ✗ Recipe "${name}" not found. Run /recipe list to see available recipes.\n`);
+    return formatRecipeShow(recipe);
+  }
+
+  // /recipe delete <name>
+  if (rest.startsWith("delete ")) {
+    const name = rest.slice(7).trim();
+    if (!deleteRecipe(name)) return chalk.red(`\n  ✗ Recipe "${name}" not found.\n`);
+    return chalk.green(`\n  ✓ Deleted recipe: ${name}\n`);
+  }
+
+  // /recipe create <name> [description]
+  if (rest.startsWith("create ")) {
+    const parts = rest.slice(7).trim().split(/\s+/);
+    const name = parts[0];
+    if (!name) return chalk.red("\n  ✗ Usage: /recipe create <name> [description]\n");
+    const description = parts.slice(1).join(" ");
+    const body = `Describe what you want the agent to do.\n\nYou can use {{variable}} placeholders for dynamic values.`;
+    const filePath = createRecipeFile(name, description || `Recipe: ${name}`, body);
+    return chalk.green(`\n  ✓ Created recipe: ${chalk.bold(name)}\n  Edit it at: ${chalk.dim(filePath)}\n`);
+  }
+
+  // /recipe edit <name>
+  if (rest.startsWith("edit ")) {
+    const name = rest.slice(5).trim();
+    const recipe = getRecipe(name);
+    if (!recipe) return chalk.red(`\n  ✗ Recipe "${name}" not found. Use /recipe create ${name} to create it.\n`);
+    const editor = process.env.EDITOR || process.env.VISUAL || "nano";
+    try {
+      cp.spawnSync(editor, [recipe.filePath], { stdio: "inherit" });
+    } catch {
+      return chalk.yellow(`\n  ⚠ Could not open editor. Edit manually: ${chalk.bold(recipe.filePath)}\n`);
+    }
+    return chalk.green(`\n  ✓ Saved: ${recipe.filePath}\n`);
+  }
+
+  // /recipe run <name> [key=value ...]
+  if (rest.startsWith("run ")) {
+    const { name, vars: inlineVars } = parseInlineVars(rest.slice(4).trim());
+    if (!name) return chalk.red("\n  ✗ Usage: /recipe run <name> [var=value ...]\n");
+    const recipe = getRecipe(name);
+    if (!recipe) return chalk.red(`\n  ✗ Recipe "${name}" not found. Run /recipe list to see available recipes.\n`);
+
+    const { values, missing } = resolveVars(recipe, inlineVars);
+
+    if (missing.length > 0) {
+      state.recipePending = { name, values, missing };
+      const varInfo = recipe.variables.find(rv => rv.name === missing[0]);
+      const desc = varInfo?.description ? ` (${varInfo.description})` : "";
+      return chalk.cyan(`\n  ✎ Recipe "${name}" needs ${missing.length} more variable(s). Enter ${chalk.bold("{{" + missing[0] + "}}")}${chalk.dim(desc)}:\n`);
+    }
+
+    // All vars resolved — queue the prompt just like /review does
+    state.recipePrompt = substituteVars(recipe.body, values);
+    return chalk.cyan(`\n  🍳 Running recipe: ${chalk.bold(name)}\n`);
+  }
+
+  return chalk.red(`\n  ✗ Unknown: "${rest}"\n  Usage: /recipe list | show <name> | run <name> [var=val] | create <name> | edit <name> | delete <name> | init\n`);
 }

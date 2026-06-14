@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as cp from "node:child_process";
 import * as crypto from "node:crypto";
+import * as readline from "node:readline";
 import chalk from "chalk";
 import type { ArxConfig, ProviderId } from "./config.js";
 import { loadConfig, resolveProviderConfig, configStatus, saveConfig } from "./config.js";
@@ -17,6 +18,11 @@ import { loadContextFiles } from "./context.js";
 import { glob } from "glob";
 import { loadHooks, type Hook, type HookEvent } from "./hooks.js";
 import { loadSkills, getGlobalSkillsDir, getProjectSkillsDir, createExampleSkill, formatSkillContext, type Skill } from "./skills.js";
+import {
+  connectRemote, disconnectRemote, getActiveSession, getActiveTransport,
+  loadRemoteConfig, saveRemoteConfig, remoteStatus, parseConnectionString,
+  type RemoteConfig, type RemoteSession, type RemoteTransport,
+} from "./remote.js";
 
 // ── Model Presets ───────────────────────────────────
 
@@ -84,6 +90,7 @@ export const SLASH_COMMANDS = [
   "/alias", "/setup",
   "/tokens", "/hook",
   "/skill",
+  "/remote",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -114,6 +121,10 @@ export interface SessionState {
   /** Cumulative token tracking for /tokens command */
   totalInputTokens?: number;
   totalOutputTokens?: number;
+  /** Remote SSH agent config */
+  remoteConfig?: RemoteConfig;
+  /** Active remote transport (non-null when connected) */
+  remoteTransport?: RemoteTransport;
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -383,6 +394,12 @@ export function handleCommand(input: string, state: SessionState): string | null
     return handleSkill(arg, state);
   }
 
+  // /remote — connect/disconnect SSH remote agent
+  if (trimmed === "/remote" || trimmed.startsWith("/remote ")) {
+    const arg = trimmed.slice(8).trim();
+    return handleRemote(arg, state);
+  }
+
   // /key — set API key (persists to ~/.arxrc.yaml)
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
@@ -498,7 +515,117 @@ ${chalk.bold.cyan("  Session")}
   Max steps: ${state.maxSteps}
   Temp     : ${temp}
   API Key  : ${state.apiKey ? chalk.green("✓") : chalk.red("✗ MISSING")}
+  Remote   : ${state.remoteTransport ? chalk.green(`🌐 ${state.remoteConfig?.username}@${state.remoteConfig?.host}`) : chalk.dim("none")}
 `;
+}
+
+// ── Remote Command Handler ─────────────────────────────────────────
+
+function handleRemote(arg: string, state: SessionState): string {
+  if (!arg) {
+    // Show status
+    if (state.remoteTransport && state.remoteConfig) {
+      const { host, port, username, projectRoot } = state.remoteConfig;
+      const addr = port === 22 ? host : `${host}:${port}`;
+      const projectRootStr = projectRoot;
+      return [
+        ``,
+        `  ${chalk.bold.green("🌐 Remote Connected")}`,
+        `  Host    : ${username}@${addr}`,
+        `  Project : ${projectRootStr}`,
+        ``,
+        `  Disconnect: ${chalk.dim("/remote disconnect")}`,
+        `  Status   : ${chalk.dim("/remote status")}`,
+        ``,
+      ].join("\n");
+    }
+    const saved = loadRemoteConfig(state.projectRoot);
+    if (saved) {
+      return [
+        ``,
+        `  ${chalk.yellow("🌐 Remote Saved (disconnected)")}`,
+        `  Host    : ${saved.username}@${saved.host}${saved.port !== 22 ? `:${saved.port}` : ""}`,
+        `  Project : ${saved.projectRoot}`,
+        ``,
+        `  Connect: ${chalk.dim(`/remote ssh ${saved.username}@${saved.host}`)}`,
+        ``,
+      ].join("\n");
+    }
+    return [
+      ``,
+      `  ${chalk.dim("🌐 Remote: not configured")}`,
+      ``,
+      `  Connect:  ${chalk.dim("/remote ssh user@host[:port]")}`,
+      `  Disconnect: ${chalk.dim("/remote disconnect")}`,
+      `  Status:    ${chalk.dim("/remote status")}`,
+      ``,
+    ].join("\n");
+  }
+
+  const parts = arg.split(/\s+/);
+  const sub = parts[0].toLowerCase();
+
+  if (sub === "disconnect") {
+    if (!state.remoteTransport) {
+      return chalk.yellow("\n  ⚠ Not connected.\n");
+    }
+    disconnectRemote();
+    state.remoteTransport = undefined;
+    state.remoteConfig = undefined;
+    return chalk.green("\n  ✓ Disconnected from remote.\n");
+  }
+
+  if (sub === "status") {
+    if (state.remoteTransport && state.remoteConfig) {
+      return `\n  ${chalk.green("🌐 Connected:")} ${state.remoteConfig.username}@${state.remoteConfig.host}\n`;
+    }
+    return `\n  ${chalk.dim("🌐 Not connected.")}\n`;
+  }
+
+  if (sub === "ssh") {
+    const connStr = parts.slice(1).join(" ").trim();
+    if (!connStr) {
+      return chalk.red("\n  ✗ Usage: /remote ssh user@host[:port]\n");
+    }
+    const parsed = parseConnectionString(connStr);
+    if (!parsed) {
+      return chalk.red(`\n  ✗ Invalid connection string: "${connStr}". Use user@host[:port]\n`);
+    }
+
+    // Disconnect existing first
+    if (state.remoteTransport) {
+      disconnectRemote();
+      state.remoteTransport = undefined;
+      state.remoteConfig = undefined;
+    }
+
+    // Check for saved config
+    const saved = loadRemoteConfig(state.projectRoot);
+    const privateKey = saved?.privateKey;
+    const savedProjectRoot = saved?.projectRoot || `~`;
+
+    // Build config — password will be prompted interactively
+    const cfg: RemoteConfig = {
+      host: parsed.host,
+      port: parsed.port,
+      username: parsed.username,
+      privateKey,
+      projectRoot: savedProjectRoot,
+    };
+
+    // If we need a password and don't have a key, we return a special marker
+    // The actual connection happens in bin/arx.ts where we have readline
+    if (!cfg.privateKey && !cfg.password) {
+      // Store partial config and let the REPL handle the connection prompt
+      state.remoteConfig = cfg;
+      return `__REMOTE_NEED_PASSWORD__${parsed.username}@${parsed.host}`;
+    }
+
+    // Try connecting immediately (has key or password in saved config)
+    return `__REMOTE_CONNECT_IMMEDIATE__`;
+  }
+
+  return chalk.red(`\n  ✗ Unknown remote command: ${arg}. Use: ssh, disconnect, status\n`);
 }
 
 function showTokens(state: SessionState): string {

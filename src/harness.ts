@@ -10,10 +10,11 @@
 
 import type { AgentMessage, ContentBlock, LLMProvider } from "./llm/types.js";
 import { systemPrompt, compactionPrompt } from "./prompts.js";
-import { executeTool, setProjectRoot, TOOL_DEFS, toolTitle } from "./tools.js";
+import { executeTool, setProjectRoot, TOOL_DEFS, toolTitle, type ToolOutcome } from "./tools.js";
 import type { ContextFile } from "./context.js";
 import { loadContextFiles } from "./context.js";
 import { loadHooks, runHooks, isBlocked, type Hook, type HookResult } from "./hooks.js";
+import { executeSkillTool, type Skill } from "./skills.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -45,6 +46,8 @@ export interface RunOptions {
   history?: AgentMessage[];
   /** Temperature override (0-2). Omit for provider default. */
   temperature?: number;
+  /** Loaded skills (custom tools + context) */
+  skills?: Skill[];
 }
 
 export interface HarnessEvent {
@@ -87,7 +90,27 @@ export async function* runAgent(
 
   // Quick scan of workspace files
   const workspaceFiles = scanWorkspace(opts.projectRoot);
-  const system = systemPrompt(opts.projectRoot, workspaceFiles, contextFiles);
+  const skills = opts.skills || [];
+  const system = systemPrompt(opts.projectRoot, workspaceFiles, contextFiles, skills);
+
+  // Merge skill tools with built-in tools
+  const allTools = [...TOOL_DEFS];
+  const skillMap = new Map<string, Skill>();
+  for (const skill of skills) {
+    for (const tool of skill.tools) {
+      allTools.push({
+        name: tool.name,
+        description: `[skill:${skill.name}] ${tool.description}`,
+        input_schema: {
+          type: "object",
+          properties: tool.input_schema.properties,
+          required: tool.input_schema.required,
+          additionalProperties: tool.input_schema.additionalProperties ?? false,
+        },
+      });
+      skillMap.set(tool.name, skill);
+    }
+  }
 
   // Build conversation — use existing history if provided (post-compaction)
   const convo: AgentMessage[] = opts.history?.length
@@ -114,7 +137,7 @@ export async function* runAgent(
       for await (const ev of provider.streamChat({
         system,
         messages: convo,
-        tools: TOOL_DEFS,
+        tools: allTools,
         signal: opts.signal,
         temperature: opts.temperature,
       })) {
@@ -173,8 +196,8 @@ export async function* runAgent(
       "git_diff", "git_log", "git_status", "web_search", "wallet_balance",
     ]);
 
-    const readCalls = toolCalls.filter(tc => READ_TOOLS.has(tc.name));
-    const writeCalls = toolCalls.filter(tc => !READ_TOOLS.has(tc.name));
+    const readCalls = toolCalls.filter(tc => READ_TOOLS.has(tc.name) || skillMap.has(tc.name));
+    const writeCalls = toolCalls.filter(tc => !READ_TOOLS.has(tc.name) && !skillMap.has(tc.name));
 
     const resultBlocks: ContentBlock[] = [];
     const toolResults: Array<{ tc: typeof toolCalls[0]; r: Awaited<ReturnType<typeof executeTool>> }> = [];
@@ -202,7 +225,7 @@ export async function* runAgent(
     if (readCalls.length > 0) {
       const allowedReads = readCalls.filter(tc => !blockedTools.has(tc.id));
       const results = await Promise.all(
-        allowedReads.map(tc => executeTool(tc.name, tc.input).then(r => ({ tc, r })))
+        allowedReads.map(tc => dispatchTool(tc.name, tc.input, skillMap).then(r => ({ tc, r })))
       );
       for (const { tc, r } of results) {
         toolResults.push({ tc, r });
@@ -216,7 +239,7 @@ export async function* runAgent(
     // Execute write tools sequentially (skip blocked)
     for (const tc of writeCalls) {
       if (blockedTools.has(tc.id)) continue;
-      const r = await executeTool(tc.name, tc.input);
+      const r = await dispatchTool(tc.name, tc.input, skillMap);
       toolResults.push({ tc, r });
       if (r.verifies && !verified) {
         verified = true;
@@ -312,6 +335,33 @@ export async function* runAgent(
     summary: lastText.trim() || "(no summary)",
     steps: totalSteps,
   };
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Dispatch tool execution: built-in or skill tool */
+async function dispatchTool(
+  name: string,
+  input: Record<string, unknown>,
+  skillMap: Map<string, Skill>,
+): Promise<ToolOutcome> {
+  // Check if this is a skill tool
+  const skill = skillMap.get(name);
+  if (skill) {
+    const result = await executeSkillTool(skill, name, input);
+    return { ok: result.ok, output: result.output };
+  }
+  // Default: built-in tool
+  return executeTool(name, input);
+}
+
+/** Check if a tool is a known built-in read tool */
+function isBuiltinReadTool(name: string): boolean {
+  const READ_TOOLS = new Set([
+    "list_files", "read_file", "search", "find_files",
+    "git_diff", "git_log", "git_status", "web_search", "wallet_balance",
+  ]);
+  return READ_TOOLS.has(name);
 }
 
 /** Quick scan to show the agent what files exist. Limited to 40 entries to save tokens. */

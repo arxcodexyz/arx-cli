@@ -16,6 +16,7 @@ import { PROVIDER_REGISTRY } from "./llm/types.js";
 import { loadContextFiles } from "./context.js";
 import { glob } from "glob";
 import { loadHooks, type Hook, type HookEvent } from "./hooks.js";
+import { loadSkills, getGlobalSkillsDir, getProjectSkillsDir, createExampleSkill, formatSkillContext, type Skill } from "./skills.js";
 
 // ── Model Presets ───────────────────────────────────
 
@@ -82,6 +83,7 @@ export const SLASH_COMMANDS = [
   "/wallet", "/balance",
   "/alias", "/setup",
   "/tokens", "/hook",
+  "/skill",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -375,6 +377,12 @@ export function handleCommand(input: string, state: SessionState): string | null
     return showHooks(state.projectRoot, arg);
   }
 
+  // /skill [create|init|list] — manage skills
+  if (trimmed === "/skill" || trimmed.startsWith("/skill ")) {
+    const arg = trimmed.slice(7).trim();
+    return handleSkill(arg, state);
+  }
+
   // /key — set API key (persists to ~/.arxrc.yaml)
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
@@ -553,8 +561,7 @@ function showHooks(projectRoot: string, _arg: string): string {
   };
 
   let out = `\n${chalk.bold.cyan("  Hooks")}  ${chalk.dim(`(${hooks.length} active)`)}
-
-  ${chalk.dim("Configure: .arx/hooks.json    │    /hook to list")}\n\n`;
+\n  ${chalk.dim("Configure: .arx/hooks.json    │    /hook to list")}\n\n`;
 
   for (const h of hooks) {
     const icon = eventIcons[h.event] || "•";
@@ -567,6 +574,62 @@ function showHooks(projectRoot: string, _arg: string): string {
   }
 
   out += chalk.dim("  To customize, edit .arx/hooks.json in your project root.\n");
+  return out;
+}
+
+// ── Skills ──────────────────────────────────────────────────────────
+
+function handleSkill(arg: string, state: SessionState): string {
+  if (arg === "list" || !arg) {
+    return showSkills(state.projectRoot);
+  }
+  if (arg === "init" || arg === "create") {
+    const dir = getProjectSkillsDir(state.projectRoot);
+    const skillDir = createExampleSkill(dir);
+    return chalk.green(`\n  ✓ Created example skill at:\n    ${chalk.bold(skillDir)}\n\n  Edit SKILL.md to customize, then /skill reload\n`);
+  }
+  if (arg === "reload") {
+    // Skills are reloaded on next agent run via bin/arx.ts
+    return chalk.cyan("\n  ⚡ Skills will be reloaded on your next prompt.\n    Use /skill list to verify loaded skills.\n");
+  }
+  if (arg === "global") {
+    const dir = getGlobalSkillsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    return chalk.dim(`\n  Global skills directory: ${chalk.bold(dir)}\n  Place SKILL.md files here to make them available everywhere.\n`);
+  }
+  if (arg === "project") {
+    const dir = getProjectSkillsDir(state.projectRoot);
+    fs.mkdirSync(dir, { recursive: true });
+    return chalk.dim(`\n  Project skills directory: ${chalk.bold(dir)}\n  Place SKILL.md files here for project-specific skills.\n`);
+  }
+  return chalk.red(`\n  ✗ Unknown: ${arg}. Use: /skill list | /skill init | /skill reload | /skill global | /skill project\n`);
+}
+
+function showSkills(projectRoot: string): string {
+  const registry = loadSkills(projectRoot);
+  const { skills } = registry;
+
+  if (!skills.length) {
+    return chalk.dim(`\n  No skills loaded.\n\n  Create one:  /skill init\n  Global dir:   ${getGlobalSkillsDir()}\n  Project dir:  ${getProjectSkillsDir(projectRoot)}\n`);
+  }
+
+  let out = `\n${chalk.bold.cyan("  Skills")}  ${chalk.dim(`(${skills.length} loaded, ${registry.toolDefs.length} custom tools)`)}\n\n`;
+
+  for (const s of skills) {
+    const toolCount = s.tools.length;
+    const cmdCount = s.commands.length;
+    out += `  ${chalk.bold(s.name)}`;
+    if (s.version) out += ` ${chalk.dim(`v${s.version}`)}`;
+    if (s.description) out += `\n    ${chalk.dim(s.description)}`;
+    const badges: string[] = [];
+    if (toolCount) badges.push(chalk.green(`${toolCount} tools`));
+    if (cmdCount) badges.push(chalk.yellow(`${cmdCount} commands`));
+    if (s.prompts.length) badges.push(chalk.cyan(`${s.prompts.length} prompts`));
+    out += `\n    ${badges.join(" · ")}`;
+    out += `\n    ${chalk.dim(s.filePath)}\n\n`;
+  }
+
+  out += chalk.dim(`  Commands: /skill init  |  /skill reload  |  /skill global  |  /skill project\n`);
   return out;
 }
 

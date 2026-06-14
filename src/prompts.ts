@@ -5,21 +5,25 @@
 
 import type { ContextFile } from "./context.js";
 import { formatContextFiles } from "./context.js";
+import { formatSkillContext, type Skill } from "./skills.js";
 
 export function systemPrompt(
   projectRoot: string,
   workspaceFiles: string[] = [],
   contextFiles: ContextFile[] = [],
+  skills: Skill[] = [],
 ): string {
   const ws = workspaceFiles.length
     ? `\n\n## Workspace (${projectRoot})\n${workspaceFiles.map((p) => `- ${p}`).join("\n")}`
     : `\n\n## Workspace (${projectRoot})\nUse list_files to discover files.`;
 
   const context = formatContextFiles(contextFiles);
+  const skillCtx = formatSkillContext(skills);
 
   return `You are ArxCode — an autonomous coding agent with REAL tools on a real filesystem. You MUST use tools to act. Never just describe what you'd do.
 
 ${context}
+${skillCtx}
 
 ## Core Loop: plan → act → observe → verify
 1. Read relevant files first (read_file, search, list_files)

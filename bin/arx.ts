@@ -30,6 +30,7 @@ import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
 import { showBanner } from "../src/banner.js";
 import { loadHooks, runHooks, hasUncommittedChanges } from "../src/hooks.js";
+import { loadSkills, type Skill } from "../src/skills.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
@@ -513,6 +514,8 @@ async function streamAgent(
   maxSteps: number,
   state?: SessionState,
 ) {
+  // Load skills (reload each call so /skill reload works)
+  const skills = loadSkills(projectRoot).skills;
   let spinner: Ora | null = null;
   const startTime = Date.now();
 
@@ -539,6 +542,7 @@ async function streamAgent(
       contextFiles: state?.contextFiles,
       history: state?.conversation?.length ? state.conversation : undefined,
       temperature: state?.temperature,
+      skills,
     })) {
       switch (ev.type) {
         case "status": {

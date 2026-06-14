@@ -16,9 +16,10 @@ import { TOOL_DEFS } from "./tools.js";
 import { PROVIDER_REGISTRY } from "./llm/types.js";
 import { loadContextFiles } from "./context.js";
 import { glob } from "glob";
+import YAML from "yaml";
 import { loadHooks, type Hook, type HookEvent } from "./hooks.js";
 import { loadSkills, getGlobalSkillsDir, getProjectSkillsDir, createExampleSkill, formatSkillContext, type Skill } from "./skills.js";
-import { formatMcpStatus, loadMcpServersFromConfig, connectAllServers, disconnectAll } from "./mcp.js";
+import { formatMcpStatus, loadMcpServersFromConfig, connectAllServers, disconnectAll, formatMcpPresets, MCP_PRESETS, applyMcpPreset } from "./mcp.js";
 import {
   connectRemote, disconnectRemote, getActiveSession, getActiveTransport,
   loadRemoteConfig, saveRemoteConfig, remoteStatus, parseConnectionString,
@@ -398,11 +399,22 @@ export function handleCommand(input: string, state: SessionState): string | null
     return handleSkill(arg, state);
   }
 
-  // /mcp [list|connect|disconnect] — MCP server management
+  // /mcp [list|add|config|disconnect|presets] — MCP server management
   if (trimmed === "/mcp" || trimmed.startsWith("/mcp ")) {
     const arg = trimmed.slice(5).trim();
     if (!arg || arg === "list" || arg === "status") {
       return formatMcpStatus();
+    }
+    if (arg === "presets" || arg === "available") {
+      return formatMcpPresets();
+    }
+    if (arg.startsWith("add ")) {
+      const name = arg.slice(4).trim().toLowerCase();
+      return handleMcpAdd(name, state);
+    }
+    if (arg.startsWith("config ")) {
+      const rest = arg.slice(7).trim();
+      return handleMcpConfig(rest, state);
     }
     if (arg === "connect" || arg === "reload") {
       state.mcpPending = "connect";
@@ -412,7 +424,7 @@ export function handleCommand(input: string, state: SessionState): string | null
       state.mcpPending = "disconnect";
       return chalk.yellow("\n  ⚡ MCP disconnect queued. Send your next prompt to disconnect.\n");
     }
-    return chalk.red(`\n  ✗ Unknown: ${arg}. Use: /mcp list | /mcp connect | /mcp disconnect\n`);
+    return chalk.red(`\n  ✗ Unknown: ${arg}. Use: /mcp list | /mcp add <name> | /mcp config <name> <key>=<val> | /mcp presets | /mcp connect | /mcp disconnect\n`);
   }
 
   // /remote — connect/disconnect SSH remote agent
@@ -778,6 +790,126 @@ function showSkills(projectRoot: string): string {
   }
 
   out += chalk.dim(`  Commands: /skill init  |  /skill reload  |  /skill global  |  /skill project\n`);
+  return out;
+}
+
+// ── MCP Helpers ──────────────────────────────────────────────────
+
+function handleMcpAdd(name: string, state: SessionState): string {
+  const preset = MCP_PRESETS[name];
+  if (!preset) {
+    const available = Object.keys(MCP_PRESETS).join(", ");
+    return chalk.red(`\n  ✗ Unknown preset: "${name}". Available: ${available}\n  Tip: /mcp presets to list all\n`);
+  }
+
+  // Check required env vars
+  const missing: string[] = [];
+  if (preset.requiredEnv) {
+    for (const envName of preset.requiredEnv) {
+      const val = process.env[envName];
+      if (!val || val === `your-${name}-${envName.toLowerCase()}`) {
+        missing.push(envName);
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    let out = chalk.yellow(`\n  ⚠ "${name}" needs configuration:\n\n`);
+    for (const envName of missing) {
+      out += `    ${chalk.bold(envName)} — set via:\n`;
+      out += `      /mcp config ${name} ${envName}=<value>\n`;
+      out += `      Or: export ${envName}=...\n\n`;
+    }
+    out += chalk.dim(`  Then run: /mcp add ${name}\n`);
+    return out;
+  }
+
+  // Apply preset and write to config
+  const result = applyMcpPreset(name, {});
+  if (!result) {
+    return chalk.red(`\n  ✗ Failed to apply preset "${name}"\n`);
+  }
+
+  // Write to ~/.arxrc.yaml
+  const cfgPath = path.join(os.homedir(), ".arxrc.yaml");
+  try {
+    let existing: Record<string, any> = {};
+    if (fs.existsSync(cfgPath)) {
+      const raw = fs.readFileSync(cfgPath, "utf-8");
+      existing = YAML.parse(raw) || {};
+    }
+    if (!existing.mcp_servers) existing.mcp_servers = {};
+    // Fill in env vars from process.env
+    const env = result.config.env || {};
+    if (preset.requiredEnv) {
+      for (const envName of preset.requiredEnv) {
+        const val = process.env[envName];
+        if (val) env[envName] = val;
+      }
+    }
+    existing.mcp_servers[name] = result.config.env ? { ...result.config, env: { ...env } } : result.config;
+
+    // Clean up placeholder values
+    const serverCfg = existing.mcp_servers[name];
+    if (serverCfg?.env) {
+      for (const [k, v] of Object.entries(serverCfg.env)) {
+        if (typeof v === "string" && v.startsWith("your-")) {
+          delete serverCfg.env[k];
+        }
+      }
+      if (Object.keys(serverCfg.env).length === 0) {
+        delete serverCfg.env;
+      }
+    }
+
+    fs.writeFileSync(cfgPath, YAML.stringify(existing), "utf-8");
+  } catch (err) {
+    return chalk.red(`\n  ✗ Failed to write config: ${err instanceof Error ? err.message : err}\n`);
+  }
+
+  // Queue connect
+  state.mcpPending = "connect";
+
+  let out = chalk.green(`\n  ✓ Added MCP server: ${chalk.bold(name)}\n`);
+  out += chalk.dim(`    Config saved to ~/.arxrc.yaml\n`);
+  if (result.instructions) {
+    out += `\n  ${chalk.dim(result.instructions.replace(/\n/g, "\n  "))}\n`;
+  }
+  out += `\n  ${chalk.dim("Send your next prompt to connect.")}\n`;
+  return out;
+}
+
+function handleMcpConfig(rest: string, state: SessionState): string {
+  // Format: <name> <key>=<value> [<key2>=<value2>]
+  const parts = rest.split(/\s+/);
+  if (parts.length < 2) {
+    return chalk.red("\n  ✗ Usage: /mcp config <name> <key>=<value> [<key2>=<value2>...]\n  Example: /mcp config figma FIGMA_ACCESS_TOKEN=xxx\n");
+  }
+
+  const name = parts[0].toLowerCase();
+  const kvPairs = parts.slice(1);
+
+  const preset = MCP_PRESETS[name];
+  if (!preset) {
+    return chalk.red(`\n  ✗ Unknown preset: "${name}". Use /mcp presets to list.\n`);
+  }
+
+  let out = chalk.green(`\n  ✓ Configuring ${chalk.bold(name)}:\n\n`);
+
+  for (const pair of kvPairs) {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx <= 0) {
+      out += chalk.yellow(`    ⚠ Skipped "${pair}" — use key=value format\n`);
+      continue;
+    }
+    const key = pair.slice(0, eqIdx);
+    const val = pair.slice(eqIdx + 1);
+    // Set in process.env so the next /mcp add picks it up
+    process.env[key] = val;
+    out += `    ${chalk.green("✓")} ${chalk.bold(key)} = ${chalk.dim(val.slice(0, 4) + "***")}\n`;
+  }
+
+  out += `\n  ${chalk.dim(`Now run: /mcp add ${name}`)}\n`;
   return out;
 }
 

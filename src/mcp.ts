@@ -366,3 +366,189 @@ export function loadMcpServersFromConfig(projectRoot?: string): Record<string, M
 
   return {};
 }
+
+// ── MCP Presets ────────────────────────────────────────────────────
+
+export interface McpPreset {
+  name: string;
+  description: string;
+  /** Server type: stdio or url */
+  type: "stdio" | "url";
+  config: McpServerConfig;
+  /** Keys the user needs to provide (env var names) */
+  requiredEnv?: string[];
+  /** Instructions for getting keys */
+  setupInstructions?: string;
+}
+
+/** Built-in popular MCP server presets */
+export const MCP_PRESETS: Record<string, McpPreset> = {
+  figma: {
+    name: "Figma",
+    description: "Read & inspect Figma design files — components, frames, styles, exports",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "figma-mcp"],
+      env: { FIGMA_ACCESS_TOKEN: "your-figma-personal-access-token" },
+    },
+    requiredEnv: ["FIGMA_ACCESS_TOKEN"],
+    setupInstructions: "Get your Figma Personal Access Token:\n1. Go to Figma > Settings > Account > Personal Access Tokens\n2. Create a new token\n3. Set it as 'figma' in your config via /mcp config figma <token>\n   Or export FIGMA_ACCESS_TOKEN=... in your env\n\nThen: /mcp add figma",
+  },
+  github: {
+    name: "GitHub",
+    description: "Manage repos, issues, PRs, reviews, search code — full GitHub API",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "your-github-token" },
+    },
+    requiredEnv: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    setupInstructions: "Get a GitHub Personal Access Token:\n1. GitHub > Settings > Developer settings > Personal access tokens > Fine-grained tokens\n2. Give it repo, issues, pull requests scopes\n3. Set via: /mcp config github <token>\n   Or export GITHUB_PERSONAL_ACCESS_TOKEN=...",
+  },
+  filesystem: {
+    name: "Filesystem",
+    description: "Read, write, search files in specific directories on the local machine",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
+      timeout: 30,
+    },
+    setupInstructions: "Customize the allowed directory:\n  /mcp config filesystem --dir /path/to/allowed\nThen: /mcp add filesystem",
+  },
+  playwright: {
+    name: "Playwright",
+    description: "Browser automation — navigate pages, take screenshots, run JS, scrape",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@playwright/mcp"],
+      timeout: 120,
+    },
+    setupInstructions: "Run: /mcp add playwright\nRequires Playwright browsers: npx playwright install chromium",
+  },
+  brave: {
+    name: "Brave Search",
+    description: "Web search via Brave Search API — get up-to-date results without Whoogle",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@anthropic/search-mcp"],
+      env: { ANTHROPIC_SEARCH_API_KEY: "your-brave-api-key" },
+    },
+    requiredEnv: ["ANTHROPIC_SEARCH_API_KEY"],
+    setupInstructions: "Get a Brave Search API key:\n1. Sign up at https://brave.com/search/api/\n2. Get your API key\n3. Set via: /mcp config brave <key>\n   Or export ANTHROPIC_SEARCH_API_KEY=...",
+  },
+  supabase: {
+    name: "Supabase",
+    description: "Query Supabase projects — tables, rows, schemas, SQL queries",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@anthropic/supabase-mcp"],
+      env: { SUPABASE_URL: "https://your-project.supabase.co", SUPABASE_ANON_KEY: "your-anon-key" },
+    },
+    requiredEnv: ["SUPABASE_URL", "SUPABASE_ANON_KEY"],
+    setupInstructions: "Get your Supabase credentials:\n1. Project > Settings > API\n2. Copy Project URL and anon/public key\n3. Set via: /mcp config supabase --url <url> --key <anon-key>\n   Or export SUPABASE_URL=... and SUPABASE_ANON_KEY=...",
+  },
+  docker: {
+    name: "Docker",
+    description: "Manage Docker containers, images, volumes, networks — full Docker API",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@anthropic/docker-mcp"],
+      timeout: 60,
+    },
+    setupInstructions: "Requires Docker running locally.\nRun: /mcp add docker\nAccess to Docker socket (docker.sock) is needed.",
+  },
+  linear: {
+    name: "Linear",
+    description: "Manage Linear issues, projects, teams — full Linear API",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@anthropic/linear-mcp"],
+      env: { LINEAR_API_KEY: "your-linear-api-key" },
+    },
+    requiredEnv: ["LINEAR_API_KEY"],
+    setupInstructions: "Get your Linear API key:\n1. Linear > Settings > API > Personal API Keys\n2. Create a new key\n3. Set via: /mcp config linear <key>\n   Or export LINEAR_API_KEY=...",
+  },
+  sqlite: {
+    name: "SQLite",
+    description: "Query and manage SQLite databases — read schema, run queries, transactions",
+    type: "stdio",
+    config: {
+      command: "uvx",
+      args: ["mcp-server-sqlite", "--db-path", "./data.db"],
+      timeout: 30,
+    },
+    setupInstructions: "Customize the database path:\n  /mcp config sqlite --db-path /path/to/database.db\nThen: /mcp add sqlite\nRequires uv: pip install uvx",
+  },
+  sequential: {
+    name: "Sequential Thinking",
+    description: "Break down complex problems step-by-step with structured thinking",
+    type: "stdio",
+    config: {
+      command: "npx",
+      args: ["-y", "@anthropic/sequential-thinking-mcp"],
+    },
+    setupInstructions: "Run: /mcp add sequential\nNo API key required — pure reasoning tool.",
+  },
+};
+
+/** Get a preset config with user-provided values filled in */
+export function applyMcpPreset(
+  presetName: string,
+  values: Record<string, string>,
+): { config: McpServerConfig; instructions?: string } | null {
+  const preset = MCP_PRESETS[presetName];
+  if (!preset) return null;
+
+  // Deep clone the config
+  const config: McpServerConfig = {
+    command: preset.config.command,
+    args: preset.config.args ? [...preset.config.args] : [],
+    env: preset.config.env ? { ...preset.config.env } : undefined,
+    timeout: preset.config.timeout,
+    connect_timeout: preset.config.connect_timeout,
+  };
+
+  // Fill in values (env vars, args)
+  if (config.env && preset.requiredEnv) {
+    for (const envName of preset.requiredEnv) {
+      if (values[envName]) {
+        config.env[envName] = values[envName];
+      }
+    }
+  }
+
+  // Handle special args substitutions
+  if (presetName === "filesystem" && values["dir"]) {
+    config.args = ["-y", "@modelcontextprotocol/server-filesystem", values["dir"]];
+  }
+  if (presetName === "sqlite" && values["db-path"]) {
+    config.args = ["mcp-server-sqlite", "--db-path", values["db-path"]];
+  }
+
+  return { config, instructions: preset.setupInstructions };
+}
+
+/** List available presets as formatted string */
+export function formatMcpPresets(): string {
+  let out = `\n${chalk.bold.cyan("  MCP Presets")}  ${chalk.dim(`(${Object.keys(MCP_PRESETS).length} available)`)}\n\n`;
+
+  for (const [key, preset] of Object.entries(MCP_PRESETS)) {
+    const tags: string[] = [];
+    if (preset.requiredEnv?.length) tags.push(chalk.yellow("needs key"));
+    else tags.push(chalk.green("ready"));
+    out += `  ${chalk.bold(key.padEnd(15))} ${preset.description}\n`;
+    out += `    ${chalk.dim(preset.type)}  ${tags.join(" · ")}\n`;
+  }
+
+  out += `\n${chalk.dim("  Install: /mcp add <name>")}\n`;
+  out += `${chalk.dim("  Config:  /mcp config <name> <key>=<value>")}\n`;
+  return out;
+}

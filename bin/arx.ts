@@ -31,6 +31,7 @@ import { compactionPrompt } from "../src/prompts.js";
 import { showBanner } from "../src/banner.js";
 import { loadHooks, runHooks, hasUncommittedChanges } from "../src/hooks.js";
 import { loadSkills, type Skill } from "../src/skills.js";
+import { connectAllServers, disconnectAll as mcpDisconnectAll, loadMcpServersFromConfig } from "../src/mcp.js";
 import { createHighlighter, highlightChunk, highlightCode } from "../src/highlight.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
@@ -160,6 +161,13 @@ async function runInteractive(initialOpts: Record<string, string>) {
   }
 
   console.log();
+
+  // Auto-connect MCP servers if configured
+  const mcpServers = loadMcpServersFromConfig(projectRoot);
+  const mcpServerCount = Object.keys(mcpServers).length;
+  if (mcpServerCount > 0) {
+    await connectAllServers(mcpServers);
+  }
 
   // History file
   const historyFile = path.join(os.homedir(), ".arx_history");
@@ -364,6 +372,27 @@ async function processInput(input: string, state: SessionState, rl: readline.Int
   // Validate API key
   if (!state.apiKey) {
     console.log(chalk.red("  ✗ No API key. Set one with /key <***> or /provider <name>.\n"));
+    return;
+  }
+
+  // Handle MCP pending action
+  if (state.mcpPending) {
+    const action = state.mcpPending;
+    state.mcpPending = undefined;
+    if (action === "connect") {
+      console.log(chalk.dim("  🔌 Connecting to MCP servers...\n"));
+      const servers = loadMcpServersFromConfig(state.projectRoot);
+      const serverCount = Object.keys(servers).length;
+      if (serverCount === 0) {
+        console.log(chalk.yellow("  ⚠ No MCP servers configured. Add to .arxrc.yaml under mcp_servers:\n"));
+      } else {
+        await connectAllServers(servers);
+        console.log(chalk.green(`  ✓ MCP: ${serverCount} server(s) configured\n`));
+      }
+    } else if (action === "disconnect") {
+      await mcpDisconnectAll();
+      console.log(chalk.yellow("  ✓ MCP servers disconnected\n"));
+    }
     return;
   }
 

@@ -15,6 +15,7 @@ import type { ContextFile } from "./context.js";
 import { loadContextFiles } from "./context.js";
 import { loadHooks, runHooks, isBlocked, type Hook, type HookResult } from "./hooks.js";
 import { executeSkillTool, type Skill } from "./skills.js";
+import { getMcpRegistry, callMcpTool } from "./mcp.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -110,6 +111,12 @@ export async function* runAgent(
       });
       skillMap.set(tool.name, skill);
     }
+  }
+
+  // Merge MCP tools from connected servers
+  const mcpRegistry = getMcpRegistry();
+  for (const tool of mcpRegistry.toolDefs) {
+    allTools.push(tool);
   }
 
   // Build conversation — use existing history if provided (post-compaction)
@@ -339,7 +346,7 @@ export async function* runAgent(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Dispatch tool execution: built-in or skill tool */
+/** Dispatch tool execution: built-in, skill tool, or MCP tool */
 async function dispatchTool(
   name: string,
   input: Record<string, unknown>,
@@ -349,6 +356,11 @@ async function dispatchTool(
   const skill = skillMap.get(name);
   if (skill) {
     const result = await executeSkillTool(skill, name, input);
+    return { ok: result.ok, output: result.output };
+  }
+  // Check if this is an MCP tool (prefixed with mcp_)
+  if (name.startsWith("mcp_")) {
+    const result = await callMcpTool(name, input);
     return { ok: result.ok, output: result.output };
   }
   // Default: built-in tool

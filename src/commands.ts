@@ -18,6 +18,7 @@ import { loadContextFiles } from "./context.js";
 import { glob } from "glob";
 import { loadHooks, type Hook, type HookEvent } from "./hooks.js";
 import { loadSkills, getGlobalSkillsDir, getProjectSkillsDir, createExampleSkill, formatSkillContext, type Skill } from "./skills.js";
+import { formatMcpStatus, loadMcpServersFromConfig, connectAllServers, disconnectAll } from "./mcp.js";
 import {
   connectRemote, disconnectRemote, getActiveSession, getActiveTransport,
   loadRemoteConfig, saveRemoteConfig, remoteStatus, parseConnectionString,
@@ -90,6 +91,7 @@ export const SLASH_COMMANDS = [
   "/alias", "/setup",
   "/tokens", "/hook",
   "/skill",
+  "/mcp",
   "/remote",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
@@ -125,6 +127,8 @@ export interface SessionState {
   remoteConfig?: RemoteConfig;
   /** Active remote transport (non-null when connected) */
   remoteTransport?: RemoteTransport;
+  /** Pending MCP action executed by bin/arx.ts on next prompt */
+  mcpPending?: "connect" | "disconnect";
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -392,6 +396,23 @@ export function handleCommand(input: string, state: SessionState): string | null
   if (trimmed === "/skill" || trimmed.startsWith("/skill ")) {
     const arg = trimmed.slice(7).trim();
     return handleSkill(arg, state);
+  }
+
+  // /mcp [list|connect|disconnect] — MCP server management
+  if (trimmed === "/mcp" || trimmed.startsWith("/mcp ")) {
+    const arg = trimmed.slice(5).trim();
+    if (!arg || arg === "list" || arg === "status") {
+      return formatMcpStatus();
+    }
+    if (arg === "connect" || arg === "reload") {
+      state.mcpPending = "connect";
+      return chalk.cyan("\n  ⚡ MCP connect queued. Send your next prompt to initialize.\n");
+    }
+    if (arg === "disconnect" || arg === "off") {
+      state.mcpPending = "disconnect";
+      return chalk.yellow("\n  ⚡ MCP disconnect queued. Send your next prompt to disconnect.\n");
+    }
+    return chalk.red(`\n  ✗ Unknown: ${arg}. Use: /mcp list | /mcp connect | /mcp disconnect\n`);
   }
 
   // /remote — connect/disconnect SSH remote agent

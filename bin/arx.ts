@@ -26,7 +26,7 @@ import { runAgent, type HarnessEvent } from "../src/harness.js";
 import { loadConfig, resolveProviderConfig, configStatus } from "../src/config.js";
 import { LLMError, PROVIDER_REGISTRY } from "../src/llm/types.js";
 import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias, handleRecipe } from "../src/commands.js"
-import { EFFORT_PRESETS, estimateCost, formatCostBreakdown } from "../src/pricing.js";
+import { EFFORT_PRESETS, estimateCost, estimatePreCost, formatCostBreakdown } from "../src/pricing.js";
 import { loadRecipes, getRecipe, substituteVars, formatRecipeList, formatRecipeShow, initBuiltinRecipes, resolveVars, deleteRecipe } from "../src/recipes.js";
 import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
@@ -35,6 +35,7 @@ import { loadHooks, runHooks, hasUncommittedChanges } from "../src/hooks.js";
 import { loadSkills, type Skill } from "../src/skills.js";
 import { connectAllServers, disconnectAll as mcpDisconnectAll, loadMcpServersFromConfig } from "../src/mcp.js";
 import { createHighlighter, highlightChunk, highlightCode } from "../src/highlight.js";
+import { detectProject, formatProjectInfo } from "../src/project.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
@@ -157,6 +158,11 @@ async function runInteractive(initialOpts: Record<string, string>) {
   if (contextFiles.length > 0) {
     const names = contextFiles.map(f => f.name).join(", ");
     console.log(chalk.dim(`  context: ${names}`));
+  }
+  // Project intelligence
+  const projInfo = detectProject(projectRoot);
+  if (projInfo.type !== "unknown") {
+    console.log(chalk.dim(`  project: ${formatProjectInfo(projInfo)}`));
   }
   if (state.effort) {
     const ecfg = EFFORT_PRESETS[state.effort];
@@ -480,6 +486,27 @@ async function processInput(input: string, state: SessionState, rl: readline.Int
     console.log(chalk.dim(`  📎 Expanded @file references\n`));
   }
 
+  // Auto-compact: suggest compact when context is large
+  const msgCount = state.conversation?.length ?? 0;
+  if (msgCount > 20) {
+    console.log(chalk.yellow(`  💡 ${msgCount} messages — /compact recommended to save tokens\n`));
+  }
+
+  // Pre-send cost estimation for paid providers
+  const isPaid = estimatePreCost(state.providerId, state.model, expandedInput.length).estimatedCost > 0;
+  if (isPaid && state.conversation && state.conversation.length >= 2) {
+    // Estimate total context cost (conversation + new prompt)
+    const convText = state.conversation
+      .map(m => m.content.filter(b => b.type === "text").map(b => (b as any).text || "").join(" "))
+      .join(" ");
+    const totalChars = convText.length + expandedInput.length;
+    const pre = estimatePreCost(state.providerId, state.model, totalChars);
+    const convLabel = pre.label !== "free" ? pre.label : "";
+    if (convLabel) {
+      console.log(chalk.dim(`  ↥ ~${pre.estimatedInputTokens.toLocaleString()} tokens est.  ${convLabel}`));
+    }
+  }
+
   // Create provider
   let provider;
   try {
@@ -625,6 +652,9 @@ async function streamAgent(
   let currentText = "";
   let currentToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
+  // Per-tool timing tracking
+  const toolTimings = new Map<string, number>();
+
   // Syntax highlighter state
   const hstate = createHighlighter();
   let currentToolResults: ContentBlock[] = [];
@@ -644,9 +674,13 @@ async function streamAgent(
           const label = ev.label || ev.phase || "";
           const icon = phaseIcon(ev.phase || "");
           // Smoother spinner — only for plan/act phases
-          if (ev.phase === "plan" || ev.phase === "act") {
+          if (ev.phase === "plan") {
             if (spinner) spinner.text = chalk.blue(`${icon} ${label}`);
             else spinner = ora({ text: chalk.blue(`${icon} ${label}`), color: "blue" }).start();
+          } else if (ev.phase === "act") {
+            const liveTokens = totalInputTokens > 0 ? chalk.dim(`  ↥${totalInputTokens.toLocaleString()} tokens`) : "";
+            if (spinner) spinner.text = chalk.blue(`${icon} ${label} ${liveTokens}`);
+            else spinner = ora({ text: chalk.blue(`${icon} ${label} ${liveTokens}`), color: "blue" }).start();
           } else {
             if (spinner) { spinner.stop(); spinner = null; }
             if (ev.phase === "settle") {
@@ -676,16 +710,23 @@ async function streamAgent(
           const title = ev.toolTitle || ev.toolName || "";
           console.log(`  ${chalk.cyan("◇")} ${chalk.cyan(title)}`);
           currentToolCalls.push({ id: ev.toolId!, name: ev.toolName!, input: ev.toolInput! });
+          // Track when this tool started for duration display
+          toolTimings.set(ev.toolId!, Date.now());
           break;
         }
 
-        case "tool_result":
+        case "tool_result": {
+          // Compute elapsed time for this tool
+          const toolStart = toolTimings.get(ev.toolId ?? "");
+          const elapsedStr = toolStart ? chalk.dim(`[${((Date.now() - toolStart) / 1000).toFixed(1)}s]`) : "";
+          toolTimings.delete(ev.toolId ?? "");
+
           if (ev.toolOk) {
             const out = shorten(ev.toolOutput || "", 100);
-            console.log(`  ${chalk.dim("┆")} ${chalk.green("✓")} ${chalk.dim(out)}`);
+            console.log(`  ${chalk.dim("┆")} ${chalk.green("✓")} ${chalk.dim(out)} ${elapsedStr}`);
           } else {
             const out = shorten(ev.toolOutput || "", 100);
-            console.log(`  ${chalk.dim("┆")} ${chalk.red("✗")} ${chalk.red(out)}`);
+            console.log(`  ${chalk.dim("┆")} ${chalk.red("✗")} ${chalk.red(out)} ${elapsedStr}`);
           }
           currentToolResults.push({
             type: "tool_result",
@@ -694,6 +735,7 @@ async function streamAgent(
             is_error: !ev.toolOk,
           });
           break;
+        }
 
         case "usage":
           totalInputTokens += ev.inputTokens ?? 0;

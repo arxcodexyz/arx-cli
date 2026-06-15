@@ -1,6 +1,6 @@
 {
   "name": "arx-cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "ArxCode CLI — autonomous coding agent. Private AI builder. BYOK.",
   "type": "module",
   "bin": {

@@ -2,6 +2,10 @@
   "name": "arx-cli",
   "version": "0.6.0",
   "description": "ArxCode CLI — autonomous coding agent. Private AI builder. BYOK.",
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "pnpm": ">=10"
+  },
   "type": "module",
   "bin": {
     "arx": "./dist/bin/arx.js"

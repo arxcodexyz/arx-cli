@@ -30,6 +30,11 @@ import {
   formatRecipeList, formatRecipeShow, createRecipeFile, deleteRecipe, initBuiltinRecipes,
   type Recipe,
 } from "./recipes.js";
+import {
+  PROVIDER_PRICING, estimateCost, estimatePreCost,
+  formatCostBreakdown, getPricingInfo, EFFORT_PRESETS,
+  type EffortLevel, type EffortConfig,
+} from "./pricing.js";
 
 // ── Model Presets ───────────────────────────────────
 
@@ -95,7 +100,7 @@ export const SLASH_COMMANDS = [
   "/status", "/log", "/find", "/stream",
   "/wallet", "/balance",
   "/alias", "/setup",
-  "/tokens", "/hook",
+  "/tokens", "/effort", "/hook",
   "/skill",
   "/mcp",
   "/remote",
@@ -140,6 +145,8 @@ export interface SessionState {
   recipePrompt?: string;
   /** Pending recipe run — waiting for missing required vars from the user */
   recipePending?: { name: string; values: Record<string, string>; missing: string[] };
+  /** Effort level for the agent (min/normal/max) */
+  effort?: EffortLevel;
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -503,7 +510,7 @@ function showTools(): string {
 
 function showHelp(): string {
   return `
-${chalk.bold.cyan("  ArxCode CLI — v0.4.0")}  ${chalk.dim("Private AI builder · BYOK · 15 tools · 27 commands")}
+${chalk.bold.cyan("  ArxCode CLI — v0.6.0")}  ${chalk.dim("Private AI builder · BYOK · 16 tools · 31 commands")}
 
   ${chalk.bold.yellow("▸ Session")}
   ${chalk.bold("/model")} [name]     Show or switch model
@@ -513,6 +520,7 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.4.0")}  ${chalk.dim("Private AI builder 
   ${chalk.bold("/config")}          Show current configuration
   ${chalk.bold("/session")}         Show session info
   ${chalk.bold("/key")} <***>       Set API key for current provider
+  ${chalk.bold("/effort")} [level]  Set agent effort (min|normal|max)
   ${chalk.bold("/clear")}           Start a new session (clear history)
 
   ${chalk.bold.yellow("▸ Context")}
@@ -556,11 +564,13 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.4.0")}  ${chalk.dim("Private AI builder 
 
 function showSession(state: SessionState): string {
   const temp = state.temperature != null ? state.temperature.toFixed(1) : "default";
+  const effort = state.effort ? EFFORT_PRESETS[state.effort] : EFFORT_PRESETS.normal;
   return `
 ${chalk.bold.cyan("  Session")}
   Provider : ${chalk.bold(state.providerId)}
   Model    : ${chalk.bold(state.model)}
   Project  : ${chalk.dim(state.projectRoot)}
+  Effort   : ${effort.icon} ${chalk.bold(state.effort || "normal")}  ${chalk.dim(`(${state.maxSteps} steps, temp ${temp})`)}
   Max steps: ${state.maxSteps}
   Temp     : ${temp}
   API Key  : ${state.apiKey ? chalk.green("✓") : chalk.red("✗ MISSING")}
@@ -682,37 +692,60 @@ function showTokens(state: SessionState): string {
   const out = state.totalOutputTokens ?? 0;
   const total = inp + out;
 
-  // Estimate cost based on provider
-  const rates: Record<string, { in: number; out: number }> = {
-    groq: { in: 0, out: 0 },
-    deepseek: { in: 0.14, out: 0.28 },
-    "deepseek-anthropic": { in: 0.14, out: 0.28 },
-    anthropic: { in: 3.0, out: 15.0 },
-    openai: { in: 1.25, out: 10.0 },
-    openrouter: { in: 3.0, out: 15.0 },
-    xai: { in: 2.0, out: 8.0 },
-    google: { in: 1.25, out: 5.0 },
-  };
-
-  const rate = rates[state.providerId] ?? { in: 1, out: 4 };
-  const costIn = (inp / 1_000_000) * rate.in;
-  const costOut = (out / 1_000_000) * rate.out;
-  const costTotal = costIn + costOut;
+  const { cost, label } = estimateCost(
+    state.providerId,
+    state.model,
+    inp,
+    out,
+  );
 
   const msgCount = state.conversation?.length ?? 0;
   const estTokens = msgCount * 2000; // rough estimate
-  const ctxPercent = total > 0 ? ((estTokens / (total + estTokens)) * 100).toFixed(0) : "0";
 
   return `
 ${chalk.bold.cyan("  Token Usage")}
 
-  ${chalk.yellow("▲")} Input:    ${chalk.bold(inp.toLocaleString())}  ${chalk.dim(`($${costIn.toFixed(4)})`)}
-  ${chalk.yellow("▼")} Output:   ${chalk.bold(out.toLocaleString())}  ${chalk.dim(`($${costOut.toFixed(4)})`)}
-  ${chalk.bold("Σ")} Total:    ${chalk.bold(total.toLocaleString())}  ${chalk.dim(`(~$${costTotal.toFixed(4)})`)}
+  ${chalk.yellow("▲")} Input:    ${chalk.bold(inp.toLocaleString())}
+  ${chalk.yellow("▼")} Output:   ${chalk.bold(out.toLocaleString())}
+  ${chalk.bold("Σ")} Total:    ${chalk.bold(total.toLocaleString())}  ${chalk.dim(`(~${label})`)}
 
-  ${chalk.dim("Messages:")} ${msgCount}  ${chalk.dim(`(~${estTokens.toLocaleString()} est. context tokens, ${ctxPercent}% of session)`)}
+  ${chalk.dim("Pricing:")}  ${chalk.dim(getPricingInfo(state.providerId, state.model))}
+  ${chalk.dim("Messages:")} ${msgCount}  ${chalk.dim(`(~${estTokens.toLocaleString()} est. context tokens)`)}
   ${chalk.dim("Use /compact to shrink context and save tokens.")}
 `;
+}
+
+// ── /effort implementation ──────────────────────────────────────────
+
+function handleEffort(arg: string, state: SessionState): string {
+  if (!arg) {
+    const current = state.effort || "normal";
+    const cfg = EFFORT_PRESETS[current];
+    return `
+${chalk.bold.cyan(`  Effort: ${cfg.icon} ${chalk.bold(current)}`)}  ${chalk.dim(cfg.label)}
+
+${chalk.dim("  Levels:")}
+  ${chalk.green("●")} ${chalk.bold("min")}     ${chalk.dim("— quick fixes only (8 steps, temp 0)")}
+  ${chalk.green("○")} ${chalk.bold("normal")}  ${chalk.dim("— balanced (24 steps, provider default temp)")}
+  ${chalk.green("○")} ${chalk.bold("max")}     ${chalk.dim("— deep reasoning (48 steps, temp 0.2)")}
+
+  ${chalk.dim(`Current: ${cfg.icon} ${chalk.bold(current)} — ${cfg.label}`)}
+  ${chalk.dim("Switch: /effort min | /effort normal | /effort max")}
+`;
+  }
+
+  const level = arg.toLowerCase() as EffortLevel;
+  if (!EFFORT_PRESETS[level]) {
+    return chalk.red(`\n  ✗ Invalid effort level: "${arg}". Use: min, normal, max\n`);
+  }
+
+  state.effort = level;
+  const cfg = EFFORT_PRESETS[level];
+  // Also set temperature and maxSteps directly so effort is applied immediately
+  state.temperature = cfg.temperature;
+  state.maxSteps = cfg.maxSteps;
+
+  return chalk.green(`\n  ✓ Effort: ${cfg.icon} ${chalk.bold(level)} — ${cfg.label}\n`);
 }
 
 function showHooks(projectRoot: string, _arg: string): string {

@@ -25,7 +25,8 @@ import { createProvider } from "../src/llm/index.js";
 import { runAgent, type HarnessEvent } from "../src/harness.js";
 import { loadConfig, resolveProviderConfig, configStatus } from "../src/config.js";
 import { LLMError, PROVIDER_REGISTRY } from "../src/llm/types.js";
-import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias, handleRecipe } from "../src/commands.js";
+import { handleCommand, type SessionState, MODEL_PRESETS, SLASH_COMMANDS, expandAlias, handleRecipe } from "../src/commands.js"
+import { EFFORT_PRESETS, estimateCost, formatCostBreakdown } from "../src/pricing.js";
 import { loadRecipes, getRecipe, substituteVars, formatRecipeList, formatRecipeShow, initBuiltinRecipes, resolveVars, deleteRecipe } from "../src/recipes.js";
 import { loadContextFiles, type ContextFile } from "../src/context.js";
 import { compactionPrompt } from "../src/prompts.js";
@@ -37,7 +38,7 @@ import { createHighlighter, highlightChunk, highlightCode } from "../src/highlig
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 // ── Phase Icons ────────────────────────────────────────────────────
 
@@ -143,12 +144,23 @@ async function runInteractive(initialOpts: Record<string, string>) {
     conversation: [],
   };
 
+  // Apply effort preset if set (overrides default maxSteps/temperature)
+  if (state.effort) {
+    const ecfg = EFFORT_PRESETS[state.effort];
+    state.maxSteps = ecfg.maxSteps;
+    state.temperature = ecfg.temperature;
+  }
+
   // Banner
   console.log(showBanner(VERSION));
   console.log(chalk.dim(`  ${providerId}  ·  ${model || "(default)"}  ·  ${projectRoot}`));
   if (contextFiles.length > 0) {
     const names = contextFiles.map(f => f.name).join(", ");
     console.log(chalk.dim(`  context: ${names}`));
+  }
+  if (state.effort) {
+    const ecfg = EFFORT_PRESETS[state.effort];
+    console.log(chalk.dim(`  effort: ${ecfg.icon} ${state.effort}  (${state.maxSteps} steps, temp ${state.temperature ?? "default"})`));
   }
   if (!apiKey) {
     console.log(chalk.yellow(`  ⚠ no API key — use /key <***> or /provider to configure`));
@@ -707,15 +719,23 @@ async function streamAgent(
           }
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           const stepStr = `${ev.steps} step${ev.steps !== 1 ? "s" : ""}`;
-          const tokenStr = (totalInputTokens > 0 || totalOutputTokens > 0)
-            ? `  ↥${totalInputTokens.toLocaleString()} ↧${totalOutputTokens.toLocaleString()}`
-            : "";
+
+          // Build compact summary line with tokens + cost estimate
+          const usageParts: string[] = [];
+          if (totalInputTokens > 0 || totalOutputTokens > 0) {
+            usageParts.push(`↥${totalInputTokens.toLocaleString()} ↧${totalOutputTokens.toLocaleString()}`);
+            // Cost estimate
+            if (state) {
+              const { label } = estimateCost(state.providerId, state.model, totalInputTokens, totalOutputTokens);
+              if (label !== "free" && label !== "unknown") usageParts.push(label);
+            }
+          }
+          const summaryStr = usageParts.length > 0 ? `  ${chalk.dim(usageParts.join("  "))}` : "";
 
           // Clean boxed summary
           const left = chalk.green("✓");
           const time = chalk.dim(`${elapsed}s`);
-          const tokens = tokenStr ? chalk.dim(tokenStr) : "";
-          console.log(`  ${chalk.dim("┌─")} ${left} ${chalk.bold.white(stepStr)} ${time} ${tokens}`);
+          console.log(`  ${chalk.dim("┌─")} ${left} ${chalk.bold.white(stepStr)} ${time}${summaryStr}`);
 
           // Hint: next steps
           if (state) {

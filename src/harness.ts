@@ -49,6 +49,8 @@ export interface RunOptions {
   temperature?: number;
   /** Loaded skills (custom tools + context) */
   skills?: Skill[];
+  /** Agent mode: auto (default), plan (plan only), act (execute only) */
+  agentMode?: "auto" | "plan" | "act";
 }
 
 export interface HarnessEvent {
@@ -92,7 +94,16 @@ export async function* runAgent(
   // Quick scan of workspace files
   const workspaceFiles = scanWorkspace(opts.projectRoot);
   const skills = opts.skills || [];
-  const system = systemPrompt(opts.projectRoot, workspaceFiles, contextFiles, skills);
+  const baseSystem = systemPrompt(opts.projectRoot, workspaceFiles, contextFiles, skills);
+
+  // Apply agent mode — build mode instructions
+  let modeInstructions = "";
+  if (opts.agentMode === "plan") {
+    modeInstructions = "\n\n## Agent Mode: PLAN\nYou are in PLANNING mode. DO NOT use write_file, replace_in_file, delete_file, or run_command. Only read, search, think, and produce a plan as text output.";
+  } else if (opts.agentMode === "act") {
+    modeInstructions = "\n\n## Agent Mode: ACT\nYou are in EXECUTION mode. Skip planning — go straight to action. Read what you need, then write/run.";
+  }
+  const system = baseSystem + modeInstructions;
 
   // Merge skill tools with built-in tools
   const allTools = [...TOOL_DEFS];

@@ -105,6 +105,13 @@ export const SLASH_COMMANDS = [
   "/mcp",
   "/remote",
   "/recipe",
+  "/version",
+  "/mode",
+  "/context", "/tree",
+  "/docs",
+  "/explain",
+  "/plan",
+  "/init",
   "/help", "/quit", "/h", "/q", "/new", "/reset",
 ];
 
@@ -147,6 +154,8 @@ export interface SessionState {
   recipePending?: { name: string; values: Record<string, string>; missing: string[] };
   /** Effort level for the agent (min/normal/max) */
   effort?: EffortLevel;
+  /** Agent mode: "auto" (default), "plan" (plan only), "act" (execute only) */
+  agentMode?: "auto" | "plan" | "act";
 }
 
 // ── Command Handler ────────────────────────────────────────────────
@@ -456,6 +465,54 @@ export function handleCommand(input: string, state: SessionState): string | null
     return handleRemote(arg, state);
   }
 
+  // /version — show version info
+  if (trimmed === "/version") {
+    return showVersion();
+  }
+
+  // /mode — set agent mode (auto/plan/act)
+  if (trimmed === "/mode" || trimmed.startsWith("/mode ")) {
+    const arg = trimmed.slice(6).trim();
+    return handleAgentMode(arg, state);
+  }
+
+  // /context — manage context files (add/remove/list)
+  if (trimmed === "/context" || trimmed.startsWith("/context ")) {
+    const arg = trimmed.slice(9).trim();
+    return handleContext(arg, state);
+  }
+
+  // /tree — show visual project tree
+  if (trimmed === "/tree" || trimmed.startsWith("/tree ")) {
+    const arg = trimmed.slice(6).trim();
+    return showProjectTree(arg, state);
+  }
+
+  // /docs — fetch documentation from web
+  if (trimmed.startsWith("/docs ")) {
+    const query = trimmed.slice(6).trim();
+    if (!query) return chalk.red("\n  ✗ Usage: /docs <query>   e.g. /docs next.js app router\n");
+    return fetchDocs(query);
+  }
+
+  // /explain — explain code in natural language
+  if (trimmed.startsWith("/explain ")) {
+    const target = trimmed.slice(9).trim();
+    if (!target) return chalk.red("\n  ✗ Usage: /explain <path>   e.g. /explain src/harness.ts\n");
+    return handleExplain(target, state);
+  }
+
+  // /plan — generate an implementation plan
+  if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
+    const arg = trimmed.slice(6).trim();
+    return handlePlan(arg, state);
+  }
+
+  // /init — create project context files
+  if (trimmed === "/init") {
+    return initProject(state);
+  }
+
   // /key — set API key (persists to ~/.arxrc.yaml)
   if (trimmed.startsWith("/key ")) {
     const key = trimmed.slice(5).trim();
@@ -510,33 +567,41 @@ function showTools(): string {
 
 function showHelp(): string {
   return `
-${chalk.bold.cyan("  ArxCode CLI — v0.6.0")}  ${chalk.dim("Private AI builder · BYOK · 16 tools · 31 commands")}
+${chalk.bold.cyan("  ArxCode CLI — v0.7.0")}  ${chalk.dim("Private AI coding agent · 16 tools · 41 commands")}
 
   ${chalk.bold.yellow("▸ Session")}
   ${chalk.bold("/model")} [name]     Show or switch model
   ${chalk.bold("/provider")} [name]  Show or switch provider (${Object.keys(PROVIDER_REGISTRY).join(", ")})
-  ${chalk.bold("/temp")} [0-2]      Show or set temperature (0=deterministic, 1=balanced, 2=creative)
+  ${chalk.bold("/mode")} [mode]     Set agent mode (auto|plan|act)
+  ${chalk.bold("/temp")} [0-2]      Show or set temperature
   ${chalk.bold("/stream")} [on|off]  Toggle streaming mode
-  ${chalk.bold("/config")}          Show current configuration
+  ${chalk.bold("/config")}          Show / get / set configuration
   ${chalk.bold("/session")}         Show session info
+  ${chalk.bold("/version")}         Show version info
   ${chalk.bold("/key")} <***>       Set API key for current provider
   ${chalk.bold("/effort")} [level]  Set agent effort (min|normal|max)
   ${chalk.bold("/clear")}           Start a new session (clear history)
+  ${chalk.bold("/init")}            Initialize project context files
 
   ${chalk.bold.yellow("▸ Context")}
   ${chalk.bold("/project")} [dir]   Show or change project directory
   ${chalk.bold("/reload")}          Re-scan project context files (AGENTS.md etc)
+  ${chalk.bold("/context")} <cmd>   Manage context files (add|remove|list)
   ${chalk.bold("/compact")} [instr] Compress conversation context (saves tokens)
-  ${chalk.bold("/tokens")}           Show session token usage & cost estimate
-  ${chalk.bold("/hook")}             List active hooks (guardrails)
+  ${chalk.bold("/tokens")}          Show session token usage & cost estimate
+  ${chalk.bold("/hook")}            List active hooks (guardrails)
   ${chalk.bold("/tools")}           List available agent tools
+  ${chalk.bold("/tree")} [depth]    Show project tree (default: 2, max: 5)
 
-  ${chalk.bold.yellow("▸ Files")}
-  ${chalk.bold("/find")} <pattern>  Find files by name glob (e.g. /find *.ts)
+  ${chalk.bold.yellow("▸ Files & Code")}
+  ${chalk.bold("/find")} <pattern>  Find files by name glob
   ${chalk.bold("/save")} <name>     Save current session
   ${chalk.bold("/load")} <name>     Load a saved session
   ${chalk.bold("/sessions")}        List saved sessions
   ${chalk.bold("/export")} [path]   Export conversation to markdown
+  ${chalk.bold("/explain")} <path>  Explain code in natural language
+  ${chalk.bold("/plan")} <goal>     Generate an implementation plan
+  ${chalk.bold("/docs")} <query>    Fetch documentation from web
 
   ${chalk.bold.yellow("▸ Git")}
   ${chalk.bold("/diff")} [target]   View git diff (unstaged, staged, branch, commit)
@@ -547,14 +612,14 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.6.0")}  ${chalk.dim("Private AI builder 
 
   ${chalk.bold.yellow("▸ Web3")}
   ${chalk.bold("/wallet")} [chain]  Generate crypto wallet (evm, solana)
-  ${chalk.bold("/balance")} <c> <a> Check wallet balance (e.g. /balance ethereum 0x...)
+  ${chalk.bold("/balance")} <c> <a> Check wallet balance
   ${chalk.bold("/search")} <query>  Search the web via Whoogle
 
   ${chalk.bold.yellow("▸ Shell")}
   ${chalk.bold("!command")}          Run shell command and send output to agent
   ${chalk.bold("!!command")}         Run shell command (don't send to agent)
   ${chalk.bold("@path/file")}        Reference a file — injects contents into the prompt
-  ${chalk.bold("line\\\\")}              End a line with \\\\ for multi-line input
+  ${chalk.bold("line\\\\")}           End a line with \\\\ for multi-line input
 
   ${chalk.bold("/help")}            Show this help
   ${chalk.bold("/quit")}            Exit
@@ -562,11 +627,402 @@ ${chalk.bold.cyan("  ArxCode CLI — v0.6.0")}  ${chalk.dim("Private AI builder 
 `;
 }
 
+// ── New Command Handlers (v0.7.0) ────────────────────────────────────
+
+function showVersion(): string {
+  return `
+${chalk.bold.cyan("  ArxCode CLI")}  ${chalk.bold("v0.7.0")}
+${chalk.dim("  Private AI coding agent · 16 tools · 41 commands")}
+
+  ${chalk.yellow("▸ Features")}
+  ${chalk.dim("  9 providers  ·  MCP client  ·  SSH remote  ·  Skills  ·  Recipes  ·  Hooks")}
+  ${chalk.dim("  Agent modes  ·  Code review  ·  Token tracking  ·  Session save/load")}
+
+  ${chalk.dim("  https://github.com/fanzru/arxcode-cli")}
+`;
+}
+
+/** Agent mode: auto (default), plan (plan-only), act (execution-only) */
+function handleAgentMode(arg: string, state: SessionState): string {
+  if (!arg) {
+    const current = state.agentMode || "auto";
+    const desc: Record<string, string> = {
+      auto: "Default — plan + act + verify loop",
+      plan: "Plan only — generate a plan without executing it",
+      act: "Execute only — skip planning, go straight to action",
+    };
+    return `
+${chalk.bold.cyan("  Agent Mode")}
+
+  ${chalk.green("●")} ${chalk.bold("auto")}     ${chalk.dim("— plan + act + observe + verify (default)")}
+  ${chalk.dim("○")} ${chalk.bold("plan")}     ${chalk.dim("— plan only, no execution (use for design)")}
+  ${chalk.dim("○")} ${chalk.bold("act")}      ${chalk.dim("— execute only, skip planning for quick fixes")}
+
+  ${chalk.dim(`Current: ${chalk.bold(current)} — ${desc[current]}`)}
+  ${chalk.dim("Switch: /mode plan | /mode act | /mode auto")}
+`;
+  }
+
+  const mode = arg.toLowerCase() as "auto" | "plan" | "act";
+  if (!["auto", "plan", "act"].includes(mode)) {
+    return chalk.red(`\n  ✗ Invalid mode: "${arg}". Use: auto, plan, act\n`);
+  }
+
+  state.agentMode = mode;
+
+  const label: Record<string, string> = {
+    auto: "auto — plan + act + verify",
+    plan: "plan — planning only, no execution",
+    act: "act — execution only, skip planning",
+  };
+
+  const icon: Record<string, string> = { auto: "🤖", plan: "📋", act: "⚡" };
+  return chalk.green(`\n  ${icon[mode]} Mode: ${chalk.bold(mode)} — ${label[mode]}\n`);
+}
+
+/** Context file management: /context add|remove|list <path> */
+function handleContext(arg: string, state: SessionState): string {
+  if (!arg || arg === "list") {
+    const files = state.contextFiles || [];
+    if (!files.length) {
+      return chalk.dim("\n  No context files loaded.\n  Use /context add <path> to add files.\n");
+    }
+    let out = `\n${chalk.bold.cyan("  Context Files")}  ${chalk.dim(`(${files.length} loaded)`)}\n\n`;
+    for (const f of files) {
+      out += `  ${chalk.green("◇")} ${chalk.bold(f.name)}  ${chalk.dim(f.path)}\n`;
+    }
+    out += `\n${chalk.dim("  /context add <path>  |  /context remove <name>")}\n`;
+    return out;
+  }
+
+  const parts = arg.split(/\\s+/);
+  const sub = parts[0].toLowerCase();
+
+  if (sub === "add" && parts[1]) {
+    const filePath = path.resolve(state.projectRoot, parts.slice(1).join(" "));
+    if (!fs.existsSync(filePath)) {
+      return chalk.red(`\n  ✗ File not found: ${filePath}\n`);
+    }
+    if (fs.statSync(filePath).isDirectory()) {
+      return chalk.yellow(`\n  ⚠ ${filePath} is a directory. Use individual files.\n`);
+    }
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    const name = path.basename(filePath);
+    state.contextFiles = state.contextFiles || [];
+    state.contextFiles.push({ path: filePath, name, content });
+    return chalk.green(`\n  ✓ Added context: ${chalk.bold(name)}\n  ${chalk.dim(filePath)}\n`);
+  }
+
+  if (sub === "remove" && parts[1]) {
+    const target = parts.slice(1).join(" ");
+    const files = state.contextFiles || [];
+    const idx = files.findIndex(f => f.name === target || f.path.endsWith(target));
+    if (idx === -1) {
+      return chalk.red(`\n  ✗ Context file "${target}" not found. Use /context list to see loaded files.\n`);
+    }
+    state.contextFiles!.splice(idx, 1);
+    return chalk.yellow(`\n  ✓ Removed context: ${chalk.bold(target)}\n`);
+  }
+
+  return chalk.red(`\n  ✗ Usage: /context list | /context add <path> | /context remove <name>\n`);
+}
+
+/** Project tree: /tree [depth] — shows filesystem tree */
+function showProjectTree(depthStr: string, state: SessionState): string {
+  const maxDepth = depthStr ? Math.min(parseInt(depthStr, 10) || 2, 5) : 2;
+  const root = state.projectRoot;
+
+  interface TreeNode {
+    name: string;
+    children: TreeNode[];
+    isDir: boolean;
+  }
+
+  function buildTree(dir: string, depth: number): TreeNode[] {
+    if (depth > maxDepth) return [];
+    const nodes: TreeNode[] = [];
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.name.startsWith(".") && e.name !== ".env.example") continue;
+        if (e.name === "node_modules" || e.name === ".git" || e.name === "dist" || e.name === "build") continue;
+        const child: TreeNode = {
+          name: e.name,
+          children: e.isDirectory() ? buildTree(path.join(dir, e.name), depth + 1) : [],
+          isDir: e.isDirectory(),
+        };
+        nodes.push(child);
+      }
+    } catch { /* ignore */ }
+    return nodes.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  function renderTree(nodes: TreeNode[], prefix: string): string {
+    let out = "";
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const isLast = i === nodes.length - 1;
+      const connector = isLast ? "└── " : "├── ";
+      const nextPrefix = prefix + (isLast ? "    " : "│   ");
+
+      if (node.isDir) {
+        out += `${prefix}${connector}${chalk.bold.cyan(node.name)}/\n`;
+        if (node.children.length > 0) {
+          out += renderTree(node.children, nextPrefix);
+        }
+      } else {
+        out += `${prefix}${connector}${node.name}\n`;
+      }
+    }
+    return out;
+  }
+
+  const tree = buildTree(root, 0);
+  const projectName = path.basename(root);
+  let out = `\n${chalk.bold.cyan("  Project Tree")}  ${chalk.dim(`${projectName}/`)}\n\n`;
+  out += renderTree(tree, "  ");
+  out += `\n${chalk.dim("  /tree [depth]  (default: 2, max: 5)")}\n`;
+  return out;
+}
+
+/** /docs — fetch web docs for libraries, APIs, languages */
+function fetchDocs(query: string): string {
+  try {
+    const url = `http://127.0.0.1:50997/search?q=${encodeURIComponent(query)}&format=json`;
+    const raw = cp.execSync(
+      `curl -s --max-time 10 "${url}"`,
+      { timeout: 12_000, encoding: "utf-8", maxBuffer: 500_000 }
+    );
+    const data = JSON.parse(raw) as { results?: Array<{ title: string; href: string; text: string }> };
+    const results = data.results || [];
+
+    if (!results.length) {
+      return chalk.yellow(`\n  No docs found for "${query}".\n`);
+    }
+
+    let out = `\n${chalk.bold.cyan("  📖 Docs")}  ${chalk.dim(`"${query}"`)}\n\n`;
+    for (let i = 0; i < Math.min(results.length, 10); i++) {
+      const r = results[i];
+      const title = r.title.includes("·") || r.title.includes("-")
+        ? r.title.replace(/(.*?)\s*[·|-]\s*(.*)/, (_, a, b) => `${chalk.bold(a.trim())}  ${chalk.dim(b.trim())}`)
+        : chalk.bold(r.title);
+      out += `  ${chalk.bold(String(i + 1))}. ${title}\n`;
+      out += `     ${chalk.dim.underline(r.href)}\n`;
+      if (r.text) out += `     ${r.text.slice(0, 250)}\n`;
+      out += "\n";
+    }
+    out += chalk.dim("  Results from web search\n");
+    return out;
+  } catch (err: any) {
+    return chalk.red(`\n  ✗ Docs search failed: ${err.message || err}\n  Is Whoogle running? (port 50997)\n`);
+  }
+}
+
+/** /explain <path[:lines]> — reads code and queues explanation */
+function handleExplain(target: string, state: SessionState): string {
+  let filePath = target;
+  let lineRange = "";
+  const colonIdx = target.lastIndexOf(":");
+  if (colonIdx > 0) {
+    const after = target.slice(colonIdx + 1);
+    if (/^\d+(-\d+)?$/.test(after)) {
+      filePath = target.slice(0, colonIdx);
+      lineRange = after;
+    }
+  }
+
+  const absPath = path.resolve(state.projectRoot, filePath);
+  if (!fs.existsSync(absPath)) {
+    return chalk.red(`\n  ✗ File not found: ${absPath}\n`);
+  }
+  if (fs.statSync(absPath).isDirectory()) {
+    return chalk.yellow(`\n  ⚠ ${filePath} is a directory. Use a file path.\n`);
+  }
+
+  const content = fs.readFileSync(absPath, "utf-8");
+  const lines = content.split("\n");
+
+  let snippet: string;
+  if (lineRange) {
+    const [startStr, endStr] = lineRange.split("-");
+    const start = Math.max(1, parseInt(startStr, 10)) - 1;
+    const end = endStr ? parseInt(endStr, 10) : start + 1;
+    snippet = lines.slice(start, end).map((l, i) => `${start + i + 1}: ${l}`).join("\n");
+  } else {
+    snippet = content.length > 8000
+      ? content.slice(0, 8000) + `\n... (${content.length - 8000} more chars)`
+      : content;
+  }
+
+  const lang = path.extname(absPath).slice(1) || "text";
+  const relPath = path.relative(state.projectRoot, absPath);
+
+  state.reviewPrompt = `## EXPLAIN CODE
+
+Explain the following code from \`${relPath}\`${lineRange ? ` (lines ${lineRange})` : ""}.
+
+### What to cover:
+1. **Purpose** — what does this code do at a high level?
+2. **Architecture** — how it fits into the larger codebase
+3. **Key functions/classes** — what each major piece does
+4. **Flow** — how data moves through this code
+5. **Notable patterns** — any tricky or interesting parts
+
+### Output format:
+- Start with a 1-sentence summary
+- Use bullet points and code references
+- Be concise — assume the reader is a competent developer
+
+\`\`\`${lang}
+${snippet}
+\`\`\``;
+
+  return chalk.cyan(
+    `\n  🔍 Explaining ${chalk.bold(relPath)}${lineRange ? ` (lines ${lineRange})` : ""}...\n` +
+    chalk.dim(`  Send your next prompt → agent will explain the code.\n`)
+  );
+}
+
+/** /plan <goal> — generate an implementation plan */
+function handlePlan(goal: string, state: SessionState): string {
+  if (!goal) {
+    return chalk.dim(`\n  Usage: /plan <goal>
+  Generate a structured implementation plan before coding.
+  Example: /plan add user authentication with JWT
+
+  Tip: Combine with /mode plan to generate plans without execution.\n`);
+  }
+
+  state.reviewPrompt = `## GENERATE IMPLEMENTATION PLAN
+
+Generate a detailed implementation plan for the following goal:
+
+### Goal
+${goal}
+
+### Project
+${state.projectRoot}
+
+### Structure your plan as:
+1. **Summary** — 1-2 sentence overview
+2. **Files to create/modify** — list each file with its purpose
+3. **Implementation steps** — numbered, ordered, specific
+4. **Dependencies** — any packages or config changes needed
+5. **Testing** — how to verify each step works
+6. **Risks** — potential issues or edge cases
+
+Be specific about function names, file paths, and data flow.
+Output ONLY the plan, no extra commentary.`;
+
+  return chalk.cyan(
+    `\n  📋 Generating plan for: ${chalk.bold(goal.slice(0, 80))}${goal.length > 80 ? "..." : ""}\n` +
+    chalk.dim(`  Send your next prompt → agent will generate the plan.\n`)
+  );
+}
+
+/** /init — create project context files */
+function initProject(state: SessionState): string {
+  const root = state.projectRoot;
+  let created = 0;
+
+  // Create .arx/ directory
+  const arxDir = path.join(root, ".arx");
+  if (!fs.existsSync(arxDir)) {
+    fs.mkdirSync(arxDir, { recursive: true });
+    created++;
+  }
+
+  // Create AGENTS.md if not exists
+  const agentsMd = path.join(root, "AGENTS.md");
+  if (!fs.existsSync(agentsMd)) {
+    const content = `# ${path.basename(root)}
+
+Project context for ArxCode CLI agent.
+
+## Tech Stack
+<!-- Describe your tech stack here -->
+
+## Conventions
+<!-- Coding conventions, style, naming -->
+
+## Architecture
+<!-- High-level architecture notes -->
+`;
+    fs.writeFileSync(agentsMd, content, "utf-8");
+    created++;
+  }
+
+  // Create .arx/hooks.json
+  const hooksFile = path.join(arxDir, "hooks.json");
+  if (!fs.existsSync(hooksFile)) {
+    const hooks = {
+      hooks: [
+        {
+          name: "rm-rf-guard",
+          event: "pre_tool_use",
+          pattern: "rm -rf /*",
+          action: "block",
+          message: "🚫 Blocked dangerous command.",
+        },
+        {
+          name: "auto-typecheck",
+          event: "post_tool_use",
+          tool: "write_file",
+          if_files: "*.ts",
+          action: "run",
+          command: "npx tsc --noEmit 2>&1 | head -20",
+          message: "⚡ Auto type-check...",
+        },
+      ],
+    };
+    fs.writeFileSync(hooksFile, JSON.stringify(hooks, null, 2), "utf-8");
+    created++;
+  }
+
+  // Create .arxrc.yaml if not exists in project
+  const arxrc = path.join(root, ".arxrc.yaml");
+  if (!fs.existsSync(arxrc)) {
+    const content = `# ArxCode CLI config
+provider: anthropic
+model: claude-sonnet-4-8
+# keys:
+#   anthropic: sk-ant-...
+#   deepseek: sk-...
+`;
+    fs.writeFileSync(arxrc, content, "utf-8");
+    created++;
+  }
+
+  // Create skills directory
+  const skillsDir = path.join(arxDir, "skills");
+  if (!fs.existsSync(skillsDir)) {
+    fs.mkdirSync(skillsDir, { recursive: true });
+    created++;
+  }
+
+  if (created === 0) {
+    return chalk.yellow("\n  ⚠ Project already initialized. All files exist.\n");
+  }
+
+  let out = chalk.green(`\n  ✓ Initialized project (${created} item(s))\n\n`);
+  if (fs.existsSync(agentsMd)) out += `  ${chalk.green("◇")} AGENTS.md — project context for the agent\n`;
+  if (fs.existsSync(hooksFile)) out += `  ${chalk.green("◇")} .arx/hooks.json — guardrails & automation\n`;
+  if (fs.existsSync(arxrc)) out += `  ${chalk.green("◇")} .arxrc.yaml — CLI config\n`;
+  if (fs.existsSync(skillsDir)) out += `  ${chalk.green("◇")} .arx/skills/ — custom skills directory\n`;
+  out += `\n${chalk.dim("  Edit AGENTS.md to describe your project.\n  Run /reload to pick up changes.")}\n`;
+  return out;
+}
+
 function showSession(state: SessionState): string {
   const temp = state.temperature != null ? state.temperature.toFixed(1) : "default";
   const effort = state.effort ? EFFORT_PRESETS[state.effort] : EFFORT_PRESETS.normal;
   return `
 ${chalk.bold.cyan("  Session")}
+  Mode     : ${chalk.bold(state.agentMode || "auto")}
   Provider : ${chalk.bold(state.providerId)}
   Model    : ${chalk.bold(state.model)}
   Project  : ${chalk.dim(state.projectRoot)}

@@ -32,6 +32,7 @@ ${skillCtx}
 4. Verify with build/tests when appropriate
 
 ## Tools
+- **think** — Use this to reason before acting. Call it first when the task is complex.
 - **read_file** — Read file with line numbers. Always read before editing.
 - **list_files** — List directory contents
 - **search** — Grep. Case-insensitive substring match (max 40 hits)

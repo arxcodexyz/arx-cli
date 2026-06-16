@@ -144,6 +144,18 @@ export const TOOL_DEFS: ToolDef[] = [
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "think",
+    description: "Use this tool to reason through complex problems before taking action. The content is visible to the user. Call this when you need to analyze trade-offs, plan a multi-step approach, explain your reasoning, or break down a problem.",
+    input_schema: {
+      type: "object",
+      properties: {
+        thought: { type: "string", description: "Your step-by-step reasoning. Be thorough." },
+      },
+      required: ["thought"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "generate_wallet",
     description: "Generate crypto wallet (private key + address). EVM or Solana. Keys generated locally — nothing leaves your machine.",
     input_schema: {
@@ -473,6 +485,12 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       } catch (err: any) {
         return { ok: false, output: `Git error: ${err.message || err}. Is this a git repo?` };
       }
+    }
+
+    case "think": {
+      const thought = String(input.thought || "");
+      if (!thought) return { ok: false, output: "think tool requires a thought" };
+      return { ok: true, output: `🤔 ${thought}` };
     }
 
     case "generate_wallet": {

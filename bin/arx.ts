@@ -39,7 +39,7 @@ import { detectProject, formatProjectInfo } from "../src/project.js";
 import type { ProviderId } from "../src/config.js";
 import type { AgentMessage, ContentBlock } from "../src/llm/types.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 // ── Phase Icons ────────────────────────────────────────────────────
 
@@ -668,6 +668,7 @@ async function streamAgent(
       history: state?.conversation?.length ? state.conversation : undefined,
       temperature: state?.temperature,
       skills,
+      agentMode: state?.agentMode,
     })) {
       switch (ev.type) {
         case "status": {
